@@ -1,0 +1,13 @@
+
+
+{
+  "$schema": "https://railway.app",
+  "build": {
+    "builder": "NIXPACKS",
+    "rootDirectory": "ai-firewall/frontend"
+  },
+  "deploy": {
+    "startCommand": "python start.py",
+    "restartPolicyType": "ON_FAILURE"
+  }
+}

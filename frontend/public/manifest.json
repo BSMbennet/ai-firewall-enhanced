@@ -1,0 +1,9 @@
+{
+  "short_name": "AI Firewall",
+  "name": "AI Security Firewall",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff",
+  "icons": []
+}

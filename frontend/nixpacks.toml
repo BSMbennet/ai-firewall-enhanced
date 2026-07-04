@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["python311", "nodejs"]
+
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[phases.start]
+cmd = "python start.py"
