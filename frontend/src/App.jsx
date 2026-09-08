@@ -1,9 +1,9 @@
 import React from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import Dashboard from './pages/Dashboard'
-import Login from './pages/Login'
-import Register from './pages/Register'
-import Settings from './pages/Settings'
+import Dashboard from './pages/Dashboard.jsx'
+import Login from './pages/Login.jsx'
+import Register from './pages/Register.jsx'
+import Settings from './pages/Settings.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { Toaster } from 'react-hot-toast'
 
