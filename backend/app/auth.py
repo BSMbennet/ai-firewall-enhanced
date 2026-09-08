@@ -1,5 +1,5 @@
 from fastapi import HTTPException, status, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationToken
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Dict
 
 from app.supabase_client import SupabaseManager
@@ -17,7 +17,7 @@ def unauthorized(detail: str = "Could not validate credentials") -> HTTPExceptio
 
 
 async def get_current_user(
-    token: HTTPAuthorizationToken | None = Depends(security),
+    token: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> str:
     """Validate a Supabase Auth access token and return the authenticated user id."""
     if token is None or not token.credentials:
@@ -37,7 +37,6 @@ async def get_current_user(
     except HTTPException:
         raise
     except Exception:
-        # Do not leak upstream authentication details to clients.
         raise unauthorized()
 
 
@@ -48,8 +47,6 @@ class AuthManager:
         self,
         current_user: str = Depends(get_current_user),
     ) -> bool:
-        # Phase 1 intentionally removes the old "first user is admin" behavior.
-        # Admin authorization will be implemented from trusted server-side role data.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin authorization is not configured",
@@ -68,7 +65,7 @@ class APIKeyManager:
 
     async def verify_api_key(
         self,
-        token: HTTPAuthorizationToken | None = Depends(security),
+        token: HTTPAuthorizationCredentials | None = Depends(security),
     ) -> str:
         if token is None or not token.credentials:
             raise unauthorized("Missing API key")
