@@ -1,41 +1,38 @@
-// frontend/src/services/api.js
-import axios from 'axios';
+import axios from 'axios'
+import { supabase } from '../lib/supabase'
 
-let API_URL = process.env.REACT_APP_API_URL || 'https://ai-firewall-production.up.railway.app';
-API_URL = API_URL.replace(/\/$/, '');
+const API_URL = (
+  import.meta.env.VITE_API_URL ||
+  'https://ai-firewall-enhanced.onrender.com'
+).replace(/\/$/, '')
 
 const api = axios.create({
   baseURL: `${API_URL}/v1`,
   headers: { 'Content-Type': 'application/json' },
-});
+})
 
-api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('api_key');
-    if (token) {
-      config.headers['X-API-Key'] = token;
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
+api.interceptors.request.use(async (config) => {
+  const { data } = await supabase.auth.getSession()
+  const accessToken = data.session?.access_token
+
+  if (accessToken) {
+    config.headers.Authorization = `Bearer ${accessToken}`
+  }
+
+  return config
+})
 
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response) {
-      const isAuthRequest = error.config.url.includes('/auth/');
-      
-      // Only redirect to login if it's NOT an auth request and we get a 401
-      if (error.response.status === 401 && !isAuthRequest) {
-        localStorage.removeItem('api_key');
-        localStorage.removeItem('user_id');
-        localStorage.removeItem('user_email');
-        window.location.href = '/login';
+  async (error) => {
+    if (error.response?.status === 401) {
+      const { data } = await supabase.auth.getSession()
+      if (data.session) {
+        await supabase.auth.signOut()
       }
     }
-    return Promise.reject(error);
+    return Promise.reject(error)
   }
-);
+)
 
-export default api;
+export default api
