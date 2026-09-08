@@ -1,191 +1,69 @@
-// frontend/src/components/Register.js
-import React, { useState } from 'react';
-import {
-  Container,
-  Box,
-  Card,
-  CardContent,
-  Typography,
-  TextField,
-  Button,
-  Alert,
-  CircularProgress,
-  InputAdornment,
-  IconButton,
-} from '@mui/material';
-import {
-  Email,
-  Lock,
-  Business,
-  Visibility,
-  VisibilityOff,
-  PersonAdd,
-} from '@mui/icons-material';
-import api from '../services/api';
+import React, { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Shield, Mail, Lock, Building2 } from 'lucide-react'
+import toast from 'react-hot-toast'
+import { useAuth } from '../contexts/AuthContext'
 
-const Register = ({ onRegisterSuccess }) => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [company, setCompany] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
+const Register = () => {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [company, setCompany] = useState('')
+  const [loading, setLoading] = useState(false)
+  const { signUp } = useAuth()
+  const navigate = useNavigate()
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-    setSuccess('');
-
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+    setLoading(true)
     try {
-      const response = await api.post('/auth/register', {
-        email,
-        password,
-        company: company || 'Individual',
-      });
+      const { session } = await signUp(email, password, {
+        company: company || undefined,
+      })
 
-      if (response.data.api_key) {
-        // Save API key to localStorage
-        localStorage.setItem('api_key', response.data.api_key);
-        localStorage.setItem('user_id', response.data.user_id);
-        localStorage.setItem('user_email', email);
-        
-        // Set default header
-        api.defaults.headers.common['X-API-Key'] = response.data.api_key;
-        
-        setSuccess('Registration successful! Redirecting...');
-        
-        setTimeout(() => {
-          if (onRegisterSuccess) {
-            onRegisterSuccess(response.data);
-          }
-          window.location.href = '/dashboard';
-        }, 1500);
+      if (session) {
+        toast.success('Account created successfully!')
+        navigate('/')
+      } else {
+        toast.success('Account created. Check your email to confirm your address.')
+        navigate('/login')
       }
-    } catch (err) {
-      setError(err.response?.data?.detail || 'Registration failed. Please try again.');
+    } catch (error) {
+      toast.error(error.message || 'Registration failed')
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
-  };
+  }
 
   return (
-    <Container maxWidth="sm">
-      <Box
-        sx={{
-          minHeight: '100vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Card sx={{ width: '100%', maxWidth: 450, boxShadow: 3 }}>
-          <CardContent sx={{ p: 4 }}>
-            <Box textAlign="center" mb={3}>
-              <Typography variant="h4" gutterBottom sx={{ fontWeight: 700 }}>
-                AI Firewall
-              </Typography>
-              <Typography variant="body2" color="textSecondary">
-                Create your account
-              </Typography>
-            </Box>
-
-            {error && (
-              <Alert severity="error" sx={{ mb: 3 }}>
-                {error}
-              </Alert>
-            )}
-
-            {success && (
-              <Alert severity="success" sx={{ mb: 3 }}>
-                {success}
-              </Alert>
-            )}
-
-            <form onSubmit={handleSubmit}>
-              <TextField
-                fullWidth
-                label="Email Address"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                margin="normal"
-                required
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <Email color="action" />
-                    </InputAdornment>
-                  ),
-                }}
-              />
-
-              <TextField
-                fullWidth
-                label="Password"
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                margin="normal"
-                required
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <Lock color="action" />
-                    </InputAdornment>
-                  ),
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <IconButton onClick={() => setShowPassword(!showPassword)} edge="end">
-                        {showPassword ? <VisibilityOff /> : <Visibility />}
-                      </IconButton>
-                    </InputAdornment>
-                  ),
-                }}
-              />
-
-              <TextField
-                fullWidth
-                label="Company Name (Optional)"
-                value={company}
-                onChange={(e) => setCompany(e.target.value)}
-                margin="normal"
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <Business color="action" />
-                    </InputAdornment>
-                  ),
-                }}
-              />
-
-              <Button
-                fullWidth
-                type="submit"
-                variant="contained"
-                size="large"
-                disabled={loading}
-                sx={{ mt: 3, py: 1.5 }}
-                startIcon={loading ? <CircularProgress size={20} /> : <PersonAdd />}
-              >
-                {loading ? 'Creating Account...' : 'Register'}
-              </Button>
-
-              <Button
-                fullWidth
-                variant="text"
-                onClick={() => window.location.href = '/login'}
-                sx={{ mt: 2 }}
-              >
-                Already have an account? Login
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-      </Box>
-    </Container>
-  );
-};
-
-export default Register;
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center px-4">
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8">
+        <div className="text-center mb-8">
+          <Shield className="w-10 h-10 mx-auto text-blue-600" />
+          <h1 className="mt-4 text-2xl font-bold">Create your account</h1>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <label className="block text-sm font-medium">Email
+            <div className="relative mt-1"><Mail className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+              <input className="w-full pl-10 p-2 border rounded-lg" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
+            </div>
+          </label>
+          <label className="block text-sm font-medium">Password
+            <div className="relative mt-1"><Lock className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+              <input className="w-full pl-10 p-2 border rounded-lg" type="password" minLength="8" value={password} onChange={e => setPassword(e.target.value)} required />
+            </div>
+          </label>
+          <label className="block text-sm font-medium">Company (optional)
+            <div className="relative mt-1"><Building2 className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+              <input className="w-full pl-10 p-2 border rounded-lg" value={company} onChange={e => setCompany(e.target.value)} />
+            </div>
+          </label>
+          <button disabled={loading} className="w-full bg-blue-600 text-white py-2.5 rounded-lg disabled:opacity-50">
+            {loading ? 'Creating account...' : 'Create account'}
+          </button>
+          <p className="text-center text-sm text-gray-500">Already have an account? <button type="button" onClick={() => navigate('/login')} className="text-blue-600 font-medium">Sign in</button></p>
+        </form>
+      </div>
+    </div>
+  )
+}
+export default Register
