@@ -57,11 +57,20 @@ class APIKeyManager:
     def __init__(self):
         self.supabase = supabase
 
-    async def create_api_key(self, user_id: str, expires_days: int = 30) -> Dict:
+    async def create_api_key(self, user_id: str, name: str = None, expires_days: int = 30) -> Dict:
         return await self.supabase.create_api_key(
             user_id,
+            name=name,
             expires_days=expires_days,
         )
+
+    async def verify_api_key_value(self, api_key: str) -> str:
+        if not api_key:
+            raise unauthorized("Missing API key")
+        key_data = await self.supabase.verify_api_key(api_key)
+        if not key_data:
+            raise unauthorized("Invalid or expired API key")
+        return key_data["user_id"]
 
     async def verify_api_key(
         self,
@@ -69,12 +78,7 @@ class APIKeyManager:
     ) -> str:
         if token is None or not token.credentials:
             raise unauthorized("Missing API key")
-
-        key_data = await self.supabase.verify_api_key(token.credentials)
-        if not key_data:
-            raise unauthorized("Invalid API key")
-
-        return key_data["user_id"]
+        return await self.verify_api_key_value(token.credentials)
 
     async def revoke_key(self, key_id: str, user_id: str):
         await self.supabase.revoke_key(key_id, user_id)
