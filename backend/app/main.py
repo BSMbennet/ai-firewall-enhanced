@@ -19,6 +19,7 @@ from app.monitoring import BetterStackMonitor, MetricsCollector
 from app.models import SecurityRequest, SecurityResponse, AuditLogResponse, HealthResponse
 from app.enterprise_router import router as enterprise_router
 from app.compliance_router import router as compliance_router
+from app.operations_router import router as operations_router, emit_security_alert, dispatch_webhook_event
 
 supabase_manager = SupabaseManager()
 auth_manager = AuthManager()
@@ -41,9 +42,10 @@ async def lifespan(app: FastAPI):
     await supabase_manager.close()
     await upstash_cache.close()
 
-app = FastAPI(title="AI Firewall Enterprise API", version="3.2.0", lifespan=lifespan)
+app = FastAPI(title="AI Firewall Enterprise API", version="3.3.0", lifespan=lifespan)
 app.include_router(enterprise_router)
 app.include_router(compliance_router)
+app.include_router(operations_router)
 
 frontend_urls = os.getenv("FRONTEND_URL", "http://localhost:5173")
 allowed_origins = [origin.strip().rstrip("/") for origin in frontend_urls.split(",") if origin.strip()]
@@ -51,7 +53,7 @@ app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credenti
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    return HealthResponse(status="healthy", timestamp=datetime.utcnow(), version="3.2.0", services={
+    return HealthResponse(status="healthy", timestamp=datetime.utcnow(), version="3.3.0", services={
         "supabase": await supabase_manager.health_check(),
         "upstash": await upstash_cache.health_check(),
         "r2": await r2_storage.health_check(),
@@ -60,7 +62,7 @@ async def health_check():
 
 @app.get("/ready")
 async def readiness_check():
-    return {"status": "ready", "version": "3.2.0"}
+    return {"status": "ready", "version": "3.3.0"}
 
 @app.get("/v1/organization")
 async def get_organization(current_user: str = Depends(get_current_user)):
@@ -145,6 +147,12 @@ async def run_firewall_pipeline(prompt: str, model: str, max_tokens: int, temper
     security_result = await orchestrator.validate_request_parallel(prompt=prompt, context={}, user_id=user_id, request_id=request_id)
     org_id = gateway_context.get("organization_id"); app_id = gateway_context.get("application_id"); employee_id = gateway_context.get("employee_id"); event_base = {"user_id": user_id, "organization_id": org_id, "application_id": app_id, "employee_id": employee_id}
     await supabase_manager.log_security_event({**event_base, "event_type": "security_validation", "severity": "high" if security_result.decision == "BLOCK" else "low", "risk_score": security_result.risk_score, "details": {"reason": security_result.reason, "request_id": request_id}})
+    if org_id:
+        event_type = "security.blocked" if security_result.decision == "BLOCK" else ("security.pii" if security_result.pii_detected else ("security.high_risk" if security_result.risk_score >= 70 else "security.allowed"))
+        await dispatch_webhook_event(org_id, event_type, {"request_id":request_id,"user_id":user_id,"application_id":app_id,"employee_id":employee_id,"risk_score":security_result.risk_score,"reason":security_result.reason,"pii_detected":security_result.pii_detected,"model":model})
+        if event_type in {"security.blocked","security.high_risk","security.pii"}:
+            title = "AI request blocked" if event_type == "security.blocked" else ("High-risk AI request detected" if event_type == "security.high_risk" else "PII detected in AI request")
+            await emit_security_alert(org_id, event_type, title, f"Request {request_id} triggered {event_type}. Risk score: {security_result.risk_score}. {security_result.reason or ''}", "critical" if event_type == "security.blocked" else "high", {"request_id":request_id,"application_id":app_id,"employee_id":employee_id,"risk_score":security_result.risk_score})
     if security_result.decision == "BLOCK":
         latency_ms = (time.time() - start_time) * 1000
         await supabase_manager.log_audit({**event_base, "request_id": request_id, "action": "BLOCK", "risk_score": security_result.risk_score, "tokens_used": {}, "latency_ms": latency_ms, "model": model, "cost": 0, "reason": security_result.reason, "metadata": {"gateway": True}})
