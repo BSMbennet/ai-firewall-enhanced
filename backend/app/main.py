@@ -18,6 +18,7 @@ from app.r2_storage import CloudflareR2
 from app.monitoring import BetterStackMonitor, MetricsCollector
 from app.models import SecurityRequest, SecurityResponse, AuditLogResponse, HealthResponse
 from app.enterprise_router import router as enterprise_router
+from app.compliance_router import router as compliance_router
 
 supabase_manager = SupabaseManager()
 auth_manager = AuthManager()
@@ -40,8 +41,9 @@ async def lifespan(app: FastAPI):
     await supabase_manager.close()
     await upstash_cache.close()
 
-app = FastAPI(title="AI Firewall Enterprise API", version="3.1.0", lifespan=lifespan)
+app = FastAPI(title="AI Firewall Enterprise API", version="3.2.0", lifespan=lifespan)
 app.include_router(enterprise_router)
+app.include_router(compliance_router)
 
 frontend_urls = os.getenv("FRONTEND_URL", "http://localhost:5173")
 allowed_origins = [origin.strip().rstrip("/") for origin in frontend_urls.split(",") if origin.strip()]
@@ -49,7 +51,7 @@ app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credenti
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    return HealthResponse(status="healthy", timestamp=datetime.utcnow(), version="3.1.0", services={
+    return HealthResponse(status="healthy", timestamp=datetime.utcnow(), version="3.2.0", services={
         "supabase": await supabase_manager.health_check(),
         "upstash": await upstash_cache.health_check(),
         "r2": await r2_storage.health_check(),
@@ -58,7 +60,7 @@ async def health_check():
 
 @app.get("/ready")
 async def readiness_check():
-    return {"status": "ready", "version": "3.1.0"}
+    return {"status": "ready", "version": "3.2.0"}
 
 @app.get("/v1/organization")
 async def get_organization(current_user: str = Depends(get_current_user)):
@@ -106,7 +108,7 @@ async def get_policies(current_user: str = Depends(get_current_user)):
     return {"policies": await supabase_manager.list_policies(current_user)}
 
 @app.patch("/v1/organization/policies/{policy_id}")
-async def update_policy(policy_id: str, payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_admin)):
+async def update_policy(policy_id: str, payload: Dict[str, Any], current_user: str = Depends(get_current_user)):
     policy = await supabase_manager.update_policy(current_user, policy_id, payload)
     if not policy: raise HTTPException(status_code=404, detail="Policy not found")
     return {"policy": policy}
