@@ -1,34 +1,25 @@
--- Enable UUID extension
+-- AI Firewall production schema
+-- User identity is provided by Supabase Auth (auth.users).
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- Users table
-CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    company TEXT,
-    is_admin BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- API Keys table
+-- API keys are stored as SHA-256 hashes. The plaintext key is returned only at creation time.
 CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    key TEXT UNIQUE NOT NULL,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    key_hash TEXT UNIQUE NOT NULL,
     name TEXT,
-    permissions JSONB DEFAULT '["query"]',
+    permissions JSONB DEFAULT '["query"]'::jsonb,
     is_active BOOLEAN DEFAULT TRUE,
-    expires_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    revoked_at TIMESTAMP WITH TIME ZONE
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    revoked_at TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ
 );
 
--- Audit logs table
 CREATE TABLE IF NOT EXISTS audit_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     request_id UUID NOT NULL,
     action TEXT NOT NULL,
     risk_score FLOAT,
@@ -38,57 +29,58 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     model TEXT,
     cost FLOAT DEFAULT 0,
     metadata JSONB,
-    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Security events table
 CREATE TABLE IF NOT EXISTS security_events (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     event_type TEXT NOT NULL,
     severity TEXT NOT NULL,
     risk_score FLOAT,
     details JSONB,
-    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Webhook configurations
 CREATE TABLE IF NOT EXISTS webhook_configs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     url TEXT NOT NULL,
     events JSONB NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Create indexes
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
-CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_security_user ON security_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_security_timestamp ON security_events(timestamp DESC);
 
--- Row Level Security (RLS)
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE security_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE webhook_configs ENABLE ROW LEVEL SECURITY;
 
--- Policies
-CREATE POLICY "Users can view own data" ON users
-    FOR SELECT USING (auth.uid() = id);
-
+DROP POLICY IF EXISTS "Users can manage own API keys" ON api_keys;
 CREATE POLICY "Users can manage own API keys" ON api_keys
-    FOR ALL USING (auth.uid() = user_id);
+    FOR ALL TO authenticated
+    USING ((SELECT auth.uid()) = user_id)
+    WITH CHECK ((SELECT auth.uid()) = user_id);
 
+DROP POLICY IF EXISTS "Users can view own logs" ON audit_logs;
 CREATE POLICY "Users can view own logs" ON audit_logs
-    FOR SELECT USING (auth.uid() = user_id);
+    FOR SELECT TO authenticated
+    USING ((SELECT auth.uid()) = user_id);
 
+DROP POLICY IF EXISTS "Users can view own security events" ON security_events;
 CREATE POLICY "Users can view own security events" ON security_events
-    FOR SELECT USING (auth.uid() = user_id);
+    FOR SELECT TO authenticated
+    USING ((SELECT auth.uid()) = user_id);
 
+DROP POLICY IF EXISTS "Users can manage own webhooks" ON webhook_configs;
 CREATE POLICY "Users can manage own webhooks" ON webhook_configs
-    FOR ALL USING (auth.uid() = user_id);
+    FOR ALL TO authenticated
+    USING ((SELECT auth.uid()) = user_id)
+    WITH CHECK ((SELECT auth.uid()) = user_id);
