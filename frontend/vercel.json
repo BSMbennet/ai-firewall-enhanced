@@ -4,12 +4,6 @@
   "devCommand": "npm run dev",
   "installCommand": "npm install",
   "framework": "vite",
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "https://ai-firewall-enhanced.onrender.com/api/$1"
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",
