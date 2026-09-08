@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import List
 from datetime import datetime
-import uuid, time, asyncio
+import uuid, time, asyncio, os
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
@@ -41,9 +41,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Firewall API", version="2.0.0", lifespan=lifespan)
 
+frontend_urls = os.getenv("FRONTEND_URL", "http://localhost:5173")
+allowed_origins = [origin.strip().rstrip("/") for origin in frontend_urls.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
