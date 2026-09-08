@@ -7,7 +7,7 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://ai-firewall-api.onrender.com/api/$1"
+      "destination": "https://ai-firewall-enhanced.onrender.com/api/$1"
     }
   ],
   "headers": [
@@ -19,9 +19,5 @@
         { "key": "X-XSS-Protection", "value": "1; mode=block" }
       ]
     }
-  ],
-  "env": {
-    "VITE_SUPABASE_URL": "@supabase_url",
-    "VITE_SUPABASE_ANON_KEY": "@supabase_anon_key"
-  }
+  ]
 }
