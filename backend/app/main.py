@@ -49,7 +49,24 @@ app.include_router(operations_router)
 
 frontend_urls = os.getenv("FRONTEND_URL", "http://localhost:5173")
 allowed_origins = [origin.strip().rstrip("/") for origin in frontend_urls.split(",") if origin.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# Allow the configured production frontend plus Vercel preview deployments.
+# FRONTEND_URL may contain a comma-separated list of trusted origins.
+frontend_origin_regex = os.getenv(
+    "FRONTEND_ORIGIN_REGEX",
+    r"https://.*\.vercel\.app"
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_origin_regex=frontend_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+async def root():
+    return {"service": "AI Firewall Enterprise API", "status": "online", "docs": "/docs"}
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
