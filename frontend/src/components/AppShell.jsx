@@ -1,7 +1,7 @@
 import React,{useEffect,useState}from 'react'
 import {NavLink,useLocation} from 'react-router-dom'
 import {useAuth} from '../contexts/AuthContext'
-import {Shield,Terminal,ScrollText,ChartNoAxesCombined,Layers3,Settings,Building2,Bell,Menu,X} from 'lucide-react'
+import {Shield,Terminal,ScrollText,BarChart3,Layers3,Settings,Building2,Bell,Menu,X} from 'lucide-react'
 
 const nav=[
  ['/',Terminal,'COMMAND'],['/enterprise-operations',Bell,'LOGS'],['/compliance',ChartNoAxesCombined,'METRICS'],
