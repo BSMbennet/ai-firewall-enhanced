@@ -6,6 +6,7 @@ import hashlib, secrets, re, os
 import httpx
 from app.auth import AuthManager, get_current_user
 from app.supabase_client import SupabaseManager
+from app.billing_router import router as billing_router
 
 router = APIRouter(prefix="/v1/enterprise", tags=["enterprise"])
 supabase = SupabaseManager()
@@ -133,3 +134,6 @@ async def verify_domain(domain_id:str,user_id:str=Depends(auth.require_owner_or_
         target=(row["verification_target"] or "cname.vercel-dns.com").rstrip(".").lower(); verified=target in [str(a.get("data","")).rstrip(".").lower() for a in data.get("Answer",[])]
     except Exception: verified=False
     patch={"status":"verified" if verified else "pending","verified_at":datetime.now(timezone.utc).isoformat() if verified else None,"updated_at":datetime.now(timezone.utc).isoformat()}; r=supabase.client.table("custom_domains").update(patch).eq("id",domain_id).eq("organization_id",org["id"]).execute(); return {"domain":r.data[0],"verified":verified}
+
+# Keep billing endpoints mounted in the same enterprise API application.
+router.include_router(billing_router)
