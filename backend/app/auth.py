@@ -33,16 +33,31 @@ async def get_current_user(token: HTTPAuthorizationCredentials | None = Depends(
 class AuthManager:
     """Organization authorization backed by the server-side profile role."""
 
+    async def _role(self, user_id: str) -> str | None:
+        return await supabase.get_member_role(user_id)
+
     async def require_admin(self, current_user: str = Depends(get_current_user)) -> str:
-        role = await supabase.get_member_role(current_user)
+        role = await self._role(current_user)
         if role not in {"owner", "admin", "security"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator permission required")
         return current_user
 
+    async def require_security(self, current_user: str = Depends(get_current_user)) -> str:
+        role = await self._role(current_user)
+        if role not in {"owner", "admin", "security"}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Security administrator permission required")
+        return current_user
+
     async def require_owner_or_admin(self, current_user: str = Depends(get_current_user)) -> str:
-        role = await supabase.get_member_role(current_user)
+        role = await self._role(current_user)
         if role not in {"owner", "admin"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner or administrator permission required")
+        return current_user
+
+    async def require_owner(self, current_user: str = Depends(get_current_user)) -> str:
+        role = await self._role(current_user)
+        if role != "owner":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization owner permission required")
         return current_user
 
 
