@@ -10,7 +10,7 @@ import httpx
 from app.auth import AuthManager, get_current_user
 from app.supabase_client import SupabaseManager
 
-router = APIRouter(prefix="/v1/billing", tags=["billing"])
+router = APIRouter(prefix="/billing", tags=["billing"])
 supabase = SupabaseManager()
 auth = AuthManager()
 
@@ -21,94 +21,63 @@ PLANS = {
 }
 
 def _stripe_base(): return "https://api.stripe.com/v1"
-
 def _stripe_headers():
-    key = os.getenv("STRIPE_SECRET_KEY")
-    if not key: raise HTTPException(503, "Billing is not configured")
-    return {"Authorization": f"Bearer {key}"}
+    key=os.getenv("STRIPE_SECRET_KEY")
+    if not key: raise HTTPException(503,"Billing is not configured")
+    return {"Authorization":f"Bearer {key}"}
 
-async def _org(user_id: str):
+async def _org(user_id:str):
     if not supabase._initialized: await supabase.initialize()
-    org = await supabase.get_organization_for_user(user_id)
-    if not org: raise HTTPException(404, "Organization not found")
+    org=await supabase.get_organization_for_user(user_id)
+    if not org: raise HTTPException(404,"Organization not found")
     return org
-
-async def _billing_row(org_id: str):
-    return supabase.client.table("billing_subscriptions").select("*").eq("organization_id", org_id).maybe_single().execute().data
-
-async def _customer_id(org: Dict, user_id: str):
-    row = supabase.client.table("billing_customers").select("stripe_customer_id").eq("organization_id", org["id"]).maybe_single().execute().data
+async def _billing_row(org_id:str): return supabase.client.table("billing_subscriptions").select("*").eq("organization_id",org_id).maybe_single().execute().data
+async def _customer_id(org:Dict,user_id:str):
+    row=supabase.client.table("billing_customers").select("stripe_customer_id").eq("organization_id",org["id"]).maybe_single().execute().data
     if row: return row["stripe_customer_id"]
-    profile = await supabase.get_profile(user_id) or {}
-    email = profile.get("email") or ""
-    data = {"name": org.get("name") or "AI Firewall customer", "metadata[organization_id]": org["id"]}
-    if email: data["email"] = email
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.post(f"{_stripe_base()}/customers", data=data, headers=_stripe_headers())
-    if response.status_code >= 400: raise HTTPException(502, "Unable to create billing customer")
-    customer = response.json()
-    supabase.client.table("billing_customers").insert({"organization_id": org["id"], "stripe_customer_id": customer["id"]}).execute()
-    return customer["id"]
+    data={"name":org.get("name") or "AI Firewall customer","metadata[organization_id]":org["id"]}
+    async with httpx.AsyncClient(timeout=15) as client: response=await client.post(f"{_stripe_base()}/customers",data=data,headers=_stripe_headers())
+    if response.status_code>=400: raise HTTPException(502,"Unable to create billing customer")
+    customer=response.json(); supabase.client.table("billing_customers").insert({"organization_id":org["id"],"stripe_customer_id":customer["id"]}).execute(); return customer["id"]
 
-async def enforce_request_limit(org_id: str):
-    start = datetime.now(timezone.utc).date().replace(day=1).isoformat()
-    sub = await _billing_row(org_id)
-    plan = PLANS.get((sub or {}).get("plan_key", "starter"), PLANS["starter"])
-    status = (sub or {}).get("status")
-    if status in {"canceled", "unpaid", "past_due"} and not os.getenv("BILLING_ALLOW_PAST_DUE", "false").lower() == "true":
-        raise HTTPException(402, "Organization billing is not active")
-    row = supabase.client.table("usage_counters").select("request_count").eq("organization_id", org_id).eq("period_start", start).maybe_single().execute().data or {"request_count": 0}
-    limit = plan.get("requests_month")
-    if limit is not None and int(row.get("request_count") or 0) >= limit:
-        raise HTTPException(429, "Monthly AI request limit reached")
-    return plan
-
-async def record_usage(org_id: str, blocked: bool, tokens: int = 0):
-    start = datetime.now(timezone.utc).date().replace(day=1).isoformat()
-    current = supabase.client.table("usage_counters").select("*").eq("organization_id", org_id).eq("period_start", start).maybe_single().execute().data
-    values = {"request_count": int((current or {}).get("request_count") or 0) + 1, "blocked_count": int((current or {}).get("blocked_count") or 0) + (1 if blocked else 0), "tokens_used": int((current or {}).get("tokens_used") or 0) + max(0, int(tokens or 0))}
-    supabase.client.table("usage_counters").upsert({"organization_id": org_id, "period_start": start, **values}, on_conflict="organization_id,period_start").execute()
+async def enforce_request_limit(org_id:str):
+    sub=await _billing_row(org_id)
+    if os.getenv("BILLING_ENFORCE","false").lower()!="true": return
+    if not sub or sub.get("status") not in {"active","trialing"}: raise HTTPException(402,"Organization billing is not active")
+    limit=PLANS.get(sub.get("plan_key"),{}).get("requests_month"); period=datetime.now(timezone.utc).date().replace(day=1).isoformat(); row=supabase.client.table("usage_counters").select("request_count").eq("organization_id",org_id).eq("period_start",period).maybe_single().execute().data or {}
+    if limit is not None and int(row.get("request_count") or 0)>=limit: raise HTTPException(429,"Monthly AI request limit reached")
 
 @router.get("/plans")
-async def plans(): return {"plans": PLANS}
-
+async def plans(): return {"plans":PLANS}
 @router.get("/subscription")
-async def subscription(user_id: str = Depends(get_current_user)):
-    org = await _org(user_id); row = await _billing_row(org["id"]); key = (row or {}).get("plan_key", "starter")
-    return {"organization_id": org["id"], "subscription": row, "plan": PLANS.get(key, PLANS["starter"])}
-
+async def subscription(user_id:str=Depends(get_current_user)):
+    org=await _org(user_id); row=await _billing_row(org["id"]); key=(row or {}).get("plan_key","starter"); return {"organization_id":org["id"],"subscription":row,"plan":PLANS.get(key,PLANS["starter"])}
 @router.post("/checkout")
-async def checkout(payload: Dict[str, Any], user_id: str = Depends(auth.require_owner_or_admin)):
-    plan_key = str(payload.get("plan") or "starter").lower()
-    if plan_key not in PLANS or plan_key == "enterprise": raise HTTPException(400, "Select a self-service plan")
-    price_id = os.getenv(f"STRIPE_PRICE_{plan_key.upper()}")
-    if not price_id: raise HTTPException(503, f"Stripe price for {plan_key} is not configured")
-    org = await _org(user_id); customer = await _customer_id(org, user_id)
-    frontend = os.getenv("FRONTEND_URL", "http://localhost:5173").split(",")[0].rstrip("/")
-    seats = max(1, min(int(payload.get("seats") or 1), 10000))
-    data = {"mode":"subscription","customer":customer,"line_items[0][price]":price_id,"line_items[0][quantity]":str(seats),"success_url":f"{frontend}/settings?billing=success","cancel_url":f"{frontend}/settings?billing=cancelled","client_reference_id":org["id"],"metadata[organization_id]":org["id"],"metadata[plan_key]":plan_key}
-    async with httpx.AsyncClient(timeout=15) as client: response = await client.post(f"{_stripe_base()}/checkout/sessions", data=data, headers=_stripe_headers())
-    if response.status_code >= 400: raise HTTPException(502, "Unable to create checkout session")
-    session = response.json(); return {"url": session.get("url"), "session_id": session.get("id")}
-
+async def checkout(payload:Dict[str,Any],user_id:str=Depends(auth.require_owner_or_admin)):
+    plan_key=str(payload.get("plan") or "starter").lower()
+    if plan_key not in PLANS or plan_key=="enterprise": raise HTTPException(400,"Select a self-service plan")
+    price_id=os.getenv(f"STRIPE_PRICE_{plan_key.upper()}")
+    if not price_id: raise HTTPException(503,f"Stripe price for {plan_key} is not configured")
+    org=await _org(user_id); customer=await _customer_id(org,user_id); frontend=os.getenv("FRONTEND_URL","http://localhost:5173").split(",")[0].rstrip("/"); seats=max(1,min(int(payload.get("seats") or 1),10000))
+    data={"mode":"subscription","customer":customer,"line_items[0][price]":price_id,"line_items[0][quantity]":str(seats),"success_url":f"{frontend}/settings?billing=success","cancel_url":f"{frontend}/settings?billing=cancelled","client_reference_id":org["id"],"metadata[organization_id]":org["id"],"metadata[plan_key]":plan_key}
+    async with httpx.AsyncClient(timeout=15) as client: response=await client.post(f"{_stripe_base()}/checkout/sessions",data=data,headers=_stripe_headers())
+    if response.status_code>=400: raise HTTPException(502,"Unable to create checkout session")
+    session=response.json(); return {"url":session.get("url"),"session_id":session.get("id")}
 @router.post("/portal")
-async def portal(user_id: str = Depends(auth.require_owner_or_admin)):
-    org = await _org(user_id); customer = await _customer_id(org, user_id); frontend = os.getenv("FRONTEND_URL", "http://localhost:5173").split(",")[0].rstrip("/")
-    async with httpx.AsyncClient(timeout=15) as client: response = await client.post(f"{_stripe_base()}/billing_portal/sessions", data={"customer":customer,"return_url":f"{frontend}/settings"}, headers=_stripe_headers())
-    if response.status_code >= 400: raise HTTPException(502, "Unable to create customer portal session")
-    return {"url": response.json().get("url")}
-
+async def portal(user_id:str=Depends(auth.require_owner_or_admin)):
+    org=await _org(user_id); customer=await _customer_id(org,user_id); frontend=os.getenv("FRONTEND_URL","http://localhost:5173").split(",")[0].rstrip("/")
+    async with httpx.AsyncClient(timeout=15) as client: response=await client.post(f"{_stripe_base()}/billing_portal/sessions",data={"customer":customer,"return_url":f"{frontend}/settings"},headers=_stripe_headers())
+    if response.status_code>=400: raise HTTPException(502,"Unable to create customer portal session")
+    return {"url":response.json().get("url")}
 @router.get("/usage")
-async def usage(user_id: str = Depends(get_current_user)):
-    org = await _org(user_id); start = datetime.now(timezone.utc).date().replace(day=1).isoformat(); row = supabase.client.table("usage_counters").select("*").eq("organization_id", org["id"]).eq("period_start", start).maybe_single().execute().data or {"request_count":0,"blocked_count":0,"tokens_used":0}; sub = await _billing_row(org["id"]); key=(sub or {}).get("plan_key","starter")
-    return {"period_start":start,"usage":row,"limits":PLANS.get(key,PLANS["starter"])}
-
+async def usage(user_id:str=Depends(get_current_user)):
+    org=await _org(user_id); start=datetime.now(timezone.utc).date().replace(day=1).isoformat(); row=supabase.client.table("usage_counters").select("*").eq("organization_id",org["id"]).eq("period_start",start).maybe_single().execute().data or {"request_count":0,"blocked_count":0,"tokens_used":0}; sub=await _billing_row(org["id"]); key=(sub or {}).get("plan_key","starter"); return {"period_start":start,"usage":row,"limits":PLANS.get(key,PLANS["starter"])}
 @router.post("/webhook")
-async def webhook(request: Request):
+async def webhook(request:Request):
     secret=os.getenv("STRIPE_WEBHOOK_SECRET"); body=await request.body(); signature=request.headers.get("stripe-signature","")
     if not secret: raise HTTPException(503,"Webhook is not configured")
     try:
-        values=[p.split("=",1) for p in signature.split(",") if "=" in p]; parts={k:v for k,v in values}; timestamp=int(parts.get("t","0")); provided=parts.get("v1",""); expected=hmac.new(secret.encode(),f"{timestamp}.{body.decode()}".encode(),hashlib.sha256).hexdigest()
+        parts={k:v for k,v in [p.split("=",1) for p in signature.split(",") if "=" in p]}; timestamp=int(parts.get("t","0")); provided=parts.get("v1",""); expected=hmac.new(secret.encode(),f"{timestamp}.{body.decode()}".encode(),hashlib.sha256).hexdigest()
         if abs(time.time()-timestamp)>300 or not hmac.compare_digest(expected,provided): raise ValueError
     except Exception: raise HTTPException(400,"Invalid Stripe signature")
     event=await request.json(); event_id=event.get("id"); event_type=event.get("type") or "unknown"; obj=(event.get("data") or {}).get("object") or {}; metadata=obj.get("metadata") or {}; org_id=metadata.get("organization_id") or ((obj.get("subscription_details") or {}).get("metadata") or {}).get("organization_id")
