@@ -1,6 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import api from '../services/api'
 import SessionTimeoutModal from '../components/SessionTimeoutModal'
 import { clearSessionStorage, logoutAndRedirect, startSessionTracking } from '../utils/session'
 
@@ -19,18 +18,23 @@ export const AuthProvider = ({ children }) => {
   const [profileLoading, setProfileLoading] = useState(false)
   const [sessionWarning, setSessionWarning] = useState(false)
 
-  const loadProfile = useCallback(async (hasSession) => {
-    if (!hasSession) {
+  const loadProfile = useCallback(async (currentUser) => {
+    if (!currentUser) {
       setProfile(null)
       setProfileLoading(false)
       return
     }
     setProfileLoading(true)
     try {
-      const { data } = await api.get('/me')
-      setProfile(data)
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id,full_name,role,organization_id')
+        .eq('id', currentUser.id)
+        .maybeSingle()
+      if (error) throw error
+      setProfile(data ?? null)
     } catch (error) {
-      if (error.response?.status !== 401) console.error('Failed to load authenticated profile', error)
+      console.error('Failed to load authenticated profile', error)
       setProfile(null)
     } finally {
       setProfileLoading(false)
@@ -43,10 +47,11 @@ export const AuthProvider = ({ children }) => {
       const { data, error } = await supabase.auth.getSession()
       if (!mounted) return
       if (error) console.error('Failed to restore Supabase session', error)
-      setSession(data.session ?? null)
-      setUser(data.session?.user ?? null)
+      const nextSession = data.session ?? null
+      setSession(nextSession)
+      setUser(nextSession?.user ?? null)
       setLoading(false)
-      await loadProfile(Boolean(data.session))
+      await loadProfile(nextSession?.user ?? null)
     }
     init()
 
@@ -56,7 +61,7 @@ export const AuthProvider = ({ children }) => {
       setUser(next?.user ?? null)
       setSessionWarning(false)
       setLoading(false)
-      await loadProfile(Boolean(next))
+      await loadProfile(next?.user ?? null)
     })
 
     return () => {
@@ -83,7 +88,7 @@ export const AuthProvider = ({ children }) => {
     if (error) throw error
     setSession(data.session)
     setUser(data.user)
-    await loadProfile(Boolean(data.session))
+    await loadProfile(data.user)
     return data
   }
 
@@ -122,7 +127,7 @@ export const AuthProvider = ({ children }) => {
     session,
     profile,
     role: profile?.role ?? null,
-    organization: profile?.organization ?? null,
+    organizationId: profile?.organization_id ?? null,
     loading,
     profileLoading,
     signIn,
