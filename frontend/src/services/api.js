@@ -21,7 +21,12 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    if (error.response?.status === 401) {
+    const requestUrl = String(error.config?.url || '')
+    // Workspace provisioning is part of the post-login bootstrap. A transient/backend
+    // authorization failure here must never destroy the freshly-created Supabase session.
+    const isWorkspaceBootstrap = requestUrl === '/organization' || requestUrl.endsWith('/organization')
+
+    if (error.response?.status === 401 && !isWorkspaceBootstrap) {
       try {
         await supabase.auth.signOut()
       } finally {
