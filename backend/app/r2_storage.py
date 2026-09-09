@@ -1,4 +1,4 @@
-from app.render_storage import RenderStorage
+from app.supabase_storage import SupabaseStorage
 
 # Backward-compatible import name used by existing application wiring.
-CloudflareR2 = RenderStorage
+CloudflareR2 = SupabaseStorage
