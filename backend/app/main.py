@@ -20,6 +20,7 @@ from app.models import SecurityRequest, SecurityResponse, AuditLogResponse, Heal
 from app.enterprise_router import router as enterprise_router
 from app.compliance_router import router as compliance_router
 from app.operations_router import router as operations_router, emit_security_alert, dispatch_webhook_event
+from app.email_service import email_service
 
 supabase_manager = SupabaseManager()
 auth_manager = AuthManager()
@@ -94,8 +95,18 @@ async def get_members(current_user: str = Depends(auth_manager.require_admin)):
 @app.post("/v1/organization/members")
 async def invite_member(payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_admin)):
     try:
-        member = await supabase_manager.invite_member(current_user, str(payload.get("email") or ""), str(payload.get("full_name") or ""), str(payload.get("role") or "member"))
-        return {"member": member, "message": "Employee invitation sent"}
+        email = str(payload.get("email") or "").strip().lower()
+        full_name = str(payload.get("full_name") or "").strip()
+        role = str(payload.get("role") or "member")
+        member = await supabase_manager.invite_member(current_user, email, full_name, role)
+        org = await supabase_manager.get_organization_for_user(current_user) or {}
+        email_result = await email_service.send_employee_invitation(
+            email=email,
+            full_name=full_name,
+            organization_name=org.get("name") or "your organization",
+            role=role,
+        )
+        return {"member": member, "message": "Employee invitation created", "email": email_result}
     except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         print(f"Employee invitation failed: {exc}"); raise HTTPException(status_code=502, detail="Unable to invite employee")
@@ -203,6 +214,29 @@ async def secure_query(request: SecurityRequest, background_tasks: BackgroundTas
 @app.post("/v1/secure-ai/batch")
 async def batch_secure_query(requests: List[SecurityRequest], current_user: str = Depends(get_current_user)):
     tasks=[secure_query(req,BackgroundTasks(),current_user,None) for req in requests]; return {"results":await asyncio.gather(*tasks,return_exceptions=True)}
+
+@app.get("/v1/email/status")
+async def email_status(current_user: str = Depends(auth_manager.require_admin)):
+    return {
+        "configured": email_service.enabled,
+        "from": email_service.from_email,
+        "provider": "resend",
+    }
+
+@app.post("/v1/email/test")
+async def send_test_email(payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_admin)):
+    recipient = str(payload.get("to") or "").strip().lower()
+    if not recipient or "@" not in recipient:
+        raise HTTPException(status_code=400, detail="A valid recipient email is required")
+    result = await email_service.send(
+        to=recipient,
+        subject="AI Firewall email integration test",
+        html="<h2>AI Firewall + Resend is connected.</h2><p>This is a test email from your AI Firewall backend.</p>",
+        text="AI Firewall + Resend is connected. This is a test email from your AI Firewall backend.",
+    )
+    if not result.get("sent") and not result.get("skipped"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "Email could not be sent")
+    return result
 
 @app.get("/v1/dashboard/stats")
 async def get_dashboard_stats(current_user: str = Depends(get_current_user)): return await supabase_manager.get_org_stats(current_user)
