@@ -50,37 +50,18 @@ app.include_router(operations_router)
 
 frontend_urls = os.getenv("FRONTEND_URL", "http://localhost:5173")
 allowed_origins = [origin.strip().rstrip("/") for origin in frontend_urls.split(",") if origin.strip()]
-# Allow the configured production frontend plus Vercel preview deployments.
-# FRONTEND_URL may contain a comma-separated list of trusted origins.
-frontend_origin_regex = os.getenv(
-    "FRONTEND_ORIGIN_REGEX",
-    r"https://.*\.vercel\.app"
-)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_origin_regex=frontend_origin_regex,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+frontend_origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX", r"https://.*\.vercel\.app")
+app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_origin_regex=frontend_origin_regex, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/")
-async def root():
-    return {"service": "AI Firewall Enterprise API", "status": "online", "docs": "/docs"}
+async def root(): return {"service": "AI Firewall Enterprise API", "status": "online", "docs": "/docs"}
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    return HealthResponse(status="healthy", timestamp=datetime.utcnow(), version="3.3.0", services={
-        "supabase": await supabase_manager.health_check(),
-        "upstash": await upstash_cache.health_check(),
-        "r2": await r2_storage.health_check(),
-        "llm": await llm_router.health_check(),
-    })
+    return HealthResponse(status="healthy", timestamp=datetime.utcnow(), version="3.3.0", services={"supabase": await supabase_manager.health_check(), "upstash": await upstash_cache.health_check(), "r2": await r2_storage.health_check(), "llm": await llm_router.health_check()})
 
 @app.get("/ready")
-async def readiness_check():
-    return {"status": "ready", "version": "3.3.0"}
+async def readiness_check(): return {"status": "ready", "version": "3.3.0"}
 
 @app.get("/v1/organization")
 async def get_organization(current_user: str = Depends(get_current_user)):
@@ -95,17 +76,10 @@ async def get_members(current_user: str = Depends(auth_manager.require_admin)):
 @app.post("/v1/organization/members")
 async def invite_member(payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_admin)):
     try:
-        email = str(payload.get("email") or "").strip().lower()
-        full_name = str(payload.get("full_name") or "").strip()
-        role = str(payload.get("role") or "member")
+        email = str(payload.get("email") or "").strip().lower(); full_name = str(payload.get("full_name") or "").strip(); role = str(payload.get("role") or "member")
         member = await supabase_manager.invite_member(current_user, email, full_name, role)
         org = await supabase_manager.get_organization_for_user(current_user) or {}
-        email_result = await email_service.send_employee_invitation(
-            email=email,
-            full_name=full_name,
-            organization_name=org.get("name") or "your organization",
-            role=role,
-        )
+        email_result = await email_service.send_employee_invitation(email=email, full_name=full_name, organization_name=org.get("name") or "your organization", role=role)
         return {"member": member, "message": "Employee invitation created", "email": email_result}
     except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -113,7 +87,10 @@ async def invite_member(payload: Dict[str, Any], current_user: str = Depends(aut
 
 @app.patch("/v1/organization/members/{member_id}")
 async def update_member(member_id: str, payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_admin)):
-    member = await supabase_manager.update_member(current_user, member_id, payload.get("status"), payload.get("role"))
+    try:
+        member = await supabase_manager.update_member(current_user, member_id, payload.get("status"), payload.get("role"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not member: raise HTTPException(status_code=404, detail="Employee not found")
     return {"member": member}
 
@@ -138,7 +115,7 @@ async def get_policies(current_user: str = Depends(get_current_user)):
     return {"policies": await supabase_manager.list_policies(current_user)}
 
 @app.patch("/v1/organization/policies/{policy_id}")
-async def update_policy(policy_id: str, payload: Dict[str, Any], current_user: str = Depends(get_current_user)):
+async def update_policy(policy_id: str, payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_security)):
     policy = await supabase_manager.update_policy(current_user, policy_id, payload)
     if not policy: raise HTTPException(status_code=404, detail="Policy not found")
     return {"policy": policy}
@@ -154,7 +131,10 @@ async def get_org_activity(limit: int = 50, current_user: str = Depends(get_curr
 @app.post("/v1/api-keys")
 async def create_api_key(payload: Dict[str, Any] | None = None, current_user: str = Depends(auth_manager.require_admin)):
     payload = payload or {}; name = str(payload.get("name") or "Default Key")[:100]; expires_days = max(1, min(int(payload.get("expires_days") or 30), 3650)); application_id = payload.get("application_id") or None; employee_id = payload.get("employee_id") or None
-    api_key = await api_key_manager.create_api_key(current_user, name=name, expires_days=expires_days, application_id=application_id, employee_id=employee_id)
+    try:
+        api_key = await api_key_manager.create_api_key(current_user, name=name, expires_days=expires_days, application_id=application_id, employee_id=employee_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not api_key: raise HTTPException(status_code=500, detail="Failed to create API key")
     return {"key": api_key["key"], "id": api_key["id"], "name": api_key.get("name"), "user_id": current_user, "application_id": api_key.get("application_id"), "employee_id": api_key.get("employee_id"), "is_active": api_key.get("is_active", True), "expires_at": api_key.get("expires_at"), "created_at": api_key.get("created_at")}
 
@@ -217,34 +197,30 @@ async def batch_secure_query(requests: List[SecurityRequest], current_user: str 
 
 @app.get("/v1/email/status")
 async def email_status(current_user: str = Depends(auth_manager.require_admin)):
-    return {
-        "configured": email_service.enabled,
-        "from": email_service.from_email,
-        "provider": "resend",
-    }
+    return {"configured": email_service.enabled, "from": email_service.from_email, "provider": "resend"}
 
 @app.post("/v1/email/test")
 async def send_test_email(payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_admin)):
     recipient = str(payload.get("to") or "").strip().lower()
-    if not recipient or "@" not in recipient:
-        raise HTTPException(status_code=400, detail="A valid recipient email is required")
-    result = await email_service.send(
-        to=recipient,
-        subject="AI Firewall email integration test",
-        html="<h2>AI Firewall + Resend is connected.</h2><p>This is a test email from your AI Firewall backend.</p>",
-        text="AI Firewall + Resend is connected. This is a test email from your AI Firewall backend.",
-    )
-    if not result.get("sent") and not result.get("skipped"):
-        raise HTTPException(status_code=502, detail=result.get("error") or "Email could not be sent")
+    if not recipient or "@" not in recipient: raise HTTPException(status_code=400, detail="A valid recipient email is required")
+    result = await email_service.send(to=recipient, subject="AI Firewall email integration test", html="<h2>AI Firewall + Resend is connected.</h2><p>This is a test email from your AI Firewall backend.</p>", text="AI Firewall + Resend is connected. This is a test email from your AI Firewall backend.")
+    if not result.get("sent") and not result.get("skipped"): raise HTTPException(status_code=502, detail=result.get("error") or "Email could not be sent")
     return result
 
 @app.get("/v1/dashboard/stats")
 async def get_dashboard_stats(current_user: str = Depends(get_current_user)): return await supabase_manager.get_org_stats(current_user)
 @app.get("/v1/dashboard/recent-requests")
-async def get_recent_requests(limit:int=50,current_user:str=Depends(get_current_user)): return {"requests":await supabase_manager.get_org_activity(current_user,limit)}
+async def get_recent_requests(limit:int=50,current_user:str=Depends(get_current_user)): return {"requests":await supabase_manager.get_org_activity(current_user,min(max(limit,1),200))}
 @app.get("/v1/dashboard/threat-timeline")
-async def get_threat_timeline(days:int=7,current_user:str=Depends(get_current_user)): return {"timeline":await supabase_manager.get_threat_timeline(current_user,days)}
+async def get_threat_timeline(days:int=7,current_user:str=Depends(get_current_user)): return {"timeline":await supabase_manager.get_threat_timeline(current_user,min(max(days,1),90))}
+
 @app.get("/v1/admin/logs",response_model=List[AuditLogResponse])
-async def get_audit_logs(limit:int=100,offset:int=0,user_id:str=None,current_user:str=Depends(get_current_user),is_admin:bool=Depends(auth_manager.require_admin)): return await supabase_manager.get_logs(limit,offset,user_id)
+async def get_audit_logs(limit:int=100,offset:int=0,user_id:str=None,current_user:str=Depends(auth_manager.require_admin)):
+    org = await supabase_manager.get_organization_for_user(current_user)
+    if not org: raise HTTPException(status_code=404, detail="Organization not found")
+    query = supabase_manager.client.table("audit_logs").select("*").eq("organization_id", org["id"])
+    if user_id: query = query.eq("user_id", user_id)
+    return query.order("timestamp", desc=True).limit(min(max(limit,1),500)).offset(max(offset,0)).execute().data or []
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request,exc): return JSONResponse(status_code=exc.status_code,content={"error":exc.detail,"timestamp":datetime.utcnow().isoformat()})
