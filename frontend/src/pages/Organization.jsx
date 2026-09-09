@@ -10,8 +10,8 @@ const tabs = [
   { id: 'policies', label: 'Policies', icon: ShieldCheck },
 ]
 
-const card = 'rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl'
-const input = 'w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500'
+const card = 'af-card'
+const input = 'w-full rounded-xl border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400'
 
 export default function Organization() {
   const [tab, setTab] = useState('employees')
@@ -98,18 +98,18 @@ export default function Organization() {
     catch (error) { toast.error(error.response?.data?.detail || 'Could not save policy') }
   }
 
-  if (loading) return <div className="min-h-screen bg-slate-950 p-8 text-slate-300">Loading enterprise controls…</div>
+  if (loading) return <div className="af-page">Loading enterprise controls…</div>
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-4 md:p-8">
-      <div className="mx-auto max-w-7xl">
+    <div className="af-page">
+      <div>
         <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <p className="text-sm font-medium text-cyan-400">Enterprise control plane</p>
             <h1 className="text-3xl font-bold tracking-tight">{org?.name || 'Organization'}</h1>
             <p className="mt-1 text-sm text-slate-400">Manage people, AI applications, credentials and security policy from one place.</p>
           </div>
-          <button onClick={load} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800"><RefreshCw size={16}/> Refresh</button>
+          <button onClick={load} className="inline-flex items-center gap-2 af-btn hover:bg-slate-800"><RefreshCw size={16}/> Refresh</button>
         </div>
 
         <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -120,7 +120,7 @@ export default function Organization() {
         </div>
 
         <div className="mb-6 flex gap-2 overflow-x-auto border-b border-slate-800">
-          {tabs.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => setTab(id)} className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm ${tab === id ? 'border-cyan-400 text-cyan-300' : 'border-transparent text-slate-400 hover:text-white'}`}><Icon size={16}/>{label}</button>)}
+          {tabs.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => setTab(id)} className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm ${tab === id ? 'border-cyan-400 text-cyan-200' : 'border-transparent text-slate-400 hover:text-white'}`}><Icon size={16}/>{label}</button>)}
         </div>
 
         {tab === 'employees' && <section className="space-y-5">
@@ -130,7 +130,7 @@ export default function Organization() {
               <input className={input} placeholder="Full name" value={employeeForm.full_name} onChange={e => setEmployeeForm({...employeeForm, full_name: e.target.value})}/>
               <input className={input} type="email" placeholder="Work email" required value={employeeForm.email} onChange={e => setEmployeeForm({...employeeForm, email: e.target.value})}/>
               <select className={input} value={employeeForm.role} onChange={e => setEmployeeForm({...employeeForm, role: e.target.value})}><option value="member">Member</option><option value="developer">Developer</option><option value="security">Security</option><option value="admin">Admin</option><option value="viewer">Viewer</option></select>
-              <button className="rounded-xl bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400">Send invitation</button>
+              <button className="af-btn af-btn-primary hover:bg-cyan-400">Send invitation</button>
             </div>
           </form>
           <div className={`${card} overflow-hidden`}>
@@ -143,14 +143,14 @@ export default function Organization() {
           <form onSubmit={createApp} className={`${card} p-5`}>
             <div className="mb-4 flex items-center gap-2"><Plus size={18} className="text-cyan-400"/><h2 className="font-semibold">Register AI application</h2></div>
             <div className="grid gap-3 md:grid-cols-4"><input className={input} required placeholder="Application name" value={appForm.name} onChange={e => setAppForm({...appForm, name: e.target.value})}/><select className={input} value={appForm.environment} onChange={e => setAppForm({...appForm, environment: e.target.value})}><option>production</option><option>staging</option><option>development</option></select><input className={input} placeholder="Provider" value={appForm.provider} onChange={e => setAppForm({...appForm, provider: e.target.value})}/><input className={input} placeholder="Model" value={appForm.model} onChange={e => setAppForm({...appForm, model: e.target.value})}/></div>
-            <button className="mt-3 rounded-xl bg-cyan-500 px-4 py-2 font-semibold text-slate-950">Create application</button>
+            <button className="mt-3 af-btn af-btn-primary">Create application</button>
           </form>
           <div className={`${card} overflow-hidden`}>{apps.map(app => <div key={app.id} className="flex items-center justify-between border-b border-slate-800 p-5 last:border-0"><div><div className="font-medium">{app.name}</div><div className="text-sm text-slate-400">{app.environment} · {app.provider} · {app.model}</div></div><span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300">{app.status}</span></div>)}</div>
         </section>}
 
         {tab === 'keys' && <section className="space-y-5">
-          {newKey && <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-5"><div className="font-semibold text-amber-200">Copy this API key now</div><p className="mt-1 text-sm text-amber-100/70">For security, the secret is shown only when it is created.</p><code className="mt-3 block break-all rounded-xl bg-slate-950 p-3 text-sm text-cyan-300">{newKey.key}</code><button onClick={() => navigator.clipboard?.writeText(newKey.key)} className="mt-3 rounded-lg border border-amber-500/40 px-3 py-1.5 text-sm">Copy key</button></div>}
-          <form onSubmit={createKey} className={`${card} p-5`}><h2 className="mb-4 font-semibold">Create gateway API key</h2><div className="grid gap-3 md:grid-cols-4"><input className={input} required placeholder="Key name" value={keyForm.name} onChange={e => setKeyForm({...keyForm, name: e.target.value})}/><select className={input} value={keyForm.application_id} onChange={e => setKeyForm({...keyForm, application_id: e.target.value})}><option value="">No application</option>{apps.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select><select className={input} value={keyForm.employee_id} onChange={e => setKeyForm({...keyForm, employee_id: e.target.value})}><option value="">No employee</option>{members.filter(m => m.status !== 'removed').map(m => <option key={m.id} value={m.id}>{m.full_name || m.email}</option>)}</select><input className={input} type="number" min="1" max="3650" value={keyForm.expires_days} onChange={e => setKeyForm({...keyForm, expires_days: e.target.value})}/></div><button className="mt-3 rounded-xl bg-cyan-500 px-4 py-2 font-semibold text-slate-950">Generate key</button></form>
+          {newKey && <div className="af-card af-card-pad border-amber-500/30 bg-amber-500/[.06]"><div className="font-semibold text-amber-200">Copy this API key now</div><p className="mt-1 text-sm text-amber-100/70">For security, the secret is shown only when it is created.</p><code className="mt-3 block break-all rounded-xl bg-slate-950 p-3 text-sm text-cyan-300">{newKey.key}</code><button onClick={() => navigator.clipboard?.writeText(newKey.key)} className="mt-3 rounded-lg border border-amber-500/40 px-3 py-1.5 text-sm">Copy key</button></div>}
+          <form onSubmit={createKey} className={`${card} p-5`}><h2 className="mb-4 font-semibold">Create gateway API key</h2><div className="grid gap-3 md:grid-cols-4"><input className={input} required placeholder="Key name" value={keyForm.name} onChange={e => setKeyForm({...keyForm, name: e.target.value})}/><select className={input} value={keyForm.application_id} onChange={e => setKeyForm({...keyForm, application_id: e.target.value})}><option value="">No application</option>{apps.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select><select className={input} value={keyForm.employee_id} onChange={e => setKeyForm({...keyForm, employee_id: e.target.value})}><option value="">No employee</option>{members.filter(m => m.status !== 'removed').map(m => <option key={m.id} value={m.id}>{m.full_name || m.email}</option>)}</select><input className={input} type="number" min="1" max="3650" value={keyForm.expires_days} onChange={e => setKeyForm({...keyForm, expires_days: e.target.value})}/></div><button className="mt-3 af-btn af-btn-primary">Generate key</button></form>
           <div className={`${card} overflow-hidden`}>{keys.map(key => <div key={key.id} className="flex flex-col gap-3 border-b border-slate-800 p-5 md:flex-row md:items-center md:justify-between"><div><div className="font-medium">{key.name}</div><div className="text-sm text-slate-400">Created {new Date(key.created_at).toLocaleDateString()} · Expires {new Date(key.expires_at).toLocaleDateString()}</div></div><button disabled={!key.is_active} onClick={() => revokeKey(key)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs disabled:opacity-40">{key.is_active ? 'Revoke' : 'Revoked'}</button></div>)}</div>
         </section>}
 
