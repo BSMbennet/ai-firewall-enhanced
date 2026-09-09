@@ -14,11 +14,7 @@ const api = axios.create({
 api.interceptors.request.use(async (config) => {
   const { data } = await supabase.auth.getSession()
   const accessToken = data.session?.access_token
-
-  if (accessToken) {
-    config.headers.Authorization = `Bearer ${accessToken}`
-  }
-
+  if (accessToken) config.headers.Authorization = `Bearer ${accessToken}`
   return config
 })
 
@@ -26,9 +22,13 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401) {
-      const { data } = await supabase.auth.getSession()
-      if (data.session) {
+      try {
         await supabase.auth.signOut()
+      } finally {
+        localStorage.removeItem('token')
+        localStorage.removeItem('access_token')
+        localStorage.removeItem('user')
+        if (window.location.pathname !== '/login') window.location.replace('/login')
       }
     }
     return Promise.reject(error)
