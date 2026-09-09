@@ -2,7 +2,6 @@ from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Dict
 from datetime import datetime, timezone
-import os
 
 from app.supabase_client import SupabaseManager
 
@@ -71,25 +70,44 @@ class APIKeyManager:
         return await self.supabase.create_api_key(user_id, name=name, expires_days=expires_days, application_id=application_id, employee_id=employee_id)
 
     async def _enforce_billing(self, key_data: Dict):
-        """Optional server-side quota gate. Disabled by default until Stripe price IDs are configured."""
-        if os.getenv("BILLING_ENFORCE", "false").lower() != "true":
-            return
+        """Meter every gateway request and optionally enforce the paid-plan quota."""
         org_id = key_data.get("organization_id")
         if not org_id:
-            raise HTTPException(status_code=402, detail="API key is not attached to an organization")
-        sub = self.supabase.client.table("billing_subscriptions").select("plan_key,status").eq("organization_id", org_id).maybe_single().execute().data
-        if not sub or sub.get("status") not in {"active", "trialing"}:
-            raise HTTPException(status_code=402, detail="Organization billing is not active")
-        limits = {"starter": 10000, "professional": 100000, "enterprise": None}
-        limit = limits.get(sub.get("plan_key"), 0)
-        if limit is None:
+            raise HTTPException(status_code=403, detail="API key is not attached to an organization")
+
+        enforce = __import__("os").getenv("BILLING_ENFORCE", "false").lower() == "true"
+        limit = None
+        if enforce:
+            sub = self.supabase.client.table("billing_subscriptions").select("plan_key,status").eq("organization_id", org_id).maybe_single().execute().data
+            if not sub or sub.get("status") not in {"active", "trialing"}:
+                raise HTTPException(status_code=402, detail="Organization billing is not active")
+            limits = {"starter": 10000, "professional": 100000, "enterprise": None}
+            limit = limits.get(sub.get("plan_key"), 0)
+
+        period = datetime.now(timezone.utc).date().replace(day=1).isoformat()
+        result = self.supabase.client.rpc("consume_gateway_usage", {
+            "p_organization_id": org_id,
+            "p_period_start": period,
+            "p_limit": limit,
+        }).execute()
+        row = (result.data or [{}])[0]
+        if not row.get("allowed", True):
+            raise HTTPException(status_code=429, detail="Monthly AI request limit reached")
+
+    async def record_gateway_outcome(self, key_data: Dict, blocked: bool, tokens: int = 0):
+        org_id = key_data.get("organization_id")
+        if not org_id:
             return
         period = datetime.now(timezone.utc).date().replace(day=1).isoformat()
-        row = self.supabase.client.table("usage_counters").select("request_count").eq("organization_id", org_id).eq("period_start", period).maybe_single().execute().data or {}
-        if int(row.get("request_count") or 0) >= limit:
-            raise HTTPException(status_code=429, detail="Monthly AI request limit reached")
-        current = self.supabase.client.table("usage_counters").select("*").eq("organization_id", org_id).eq("period_start", period).maybe_single().execute().data or {}
-        self.supabase.client.table("usage_counters").upsert({"organization_id":org_id,"period_start":period,"request_count":int(current.get("request_count") or 0)+1,"blocked_count":int(current.get("blocked_count") or 0),"tokens_used":int(current.get("tokens_used") or 0)}, on_conflict="organization_id,period_start").execute()
+        try:
+            self.supabase.client.rpc("record_gateway_outcome", {
+                "p_organization_id": org_id,
+                "p_period_start": period,
+                "p_blocked": bool(blocked),
+                "p_tokens": max(0, int(tokens or 0)),
+            }).execute()
+        except Exception as exc:
+            print(f"Gateway outcome metering failed: {exc}")
 
     async def verify_api_key_value(self, api_key: str) -> Dict:
         if not api_key:
