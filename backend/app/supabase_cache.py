@@ -1,5 +1,4 @@
 import hashlib
-import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
@@ -44,13 +43,14 @@ class SupabaseCache:
     async def get_cached_response(self, prompt: str) -> Optional[Dict]:
         if not self.client:
             return None
-        result = self.client.table("ai_firewall_cache").select("value,expires_at").eq("cache_key", self._hash(prompt)).maybe_single().execute()
+        key = self._hash(prompt)
+        result = self.client.table("ai_firewall_cache").select("value,expires_at").eq("cache_key", key).maybe_single().execute()
         row = result.data
         if not row:
             return None
         expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
         if expires <= datetime.now(timezone.utc):
-            self.client.table("ai_firewall_cache").delete().eq("cache_key", self._hash(prompt)).execute()
+            self.client.table("ai_firewall_cache").delete().eq("cache_key", key).execute()
             return None
         return row.get("value")
 
@@ -81,17 +81,23 @@ class SupabaseCache:
         return int((result.data or {}).get("count") or 0)
 
     async def store_threat_signature(self, signature: str, details: Dict):
-        await self.cache_response(f"threat:{signature}", details, 86400)
+        if not self.client:
+            return
+        expires = datetime.now(timezone.utc) + timedelta(days=1)
+        self.client.table("ai_firewall_cache").upsert({
+            "cache_key": f"threat:{self._hash(signature)}",
+            "value": details,
+            "expires_at": expires.isoformat(),
+        }).execute()
 
     async def get_threat_signatures(self) -> list:
         if not self.client:
             return []
         now = datetime.now(timezone.utc).isoformat()
         result = self.client.table("ai_firewall_cache").select("value,cache_key").like("cache_key", "threat:%").gt("expires_at", now).limit(1000).execute()
-        return [row["value"] for row in (result.data or [])]
+        return [row["value"] for row in (result.data or []) if row.get("cache_key", "").startswith("threat:")]
 
     async def increment_metric(self, metric_name: str, value: int = 1):
-        # Metrics are intentionally kept in the primary audit/usage tables.
         return None
 
     async def get_metric(self, metric_name: str) -> int:
