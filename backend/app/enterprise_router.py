@@ -13,12 +13,27 @@ supabase = SupabaseManager()
 auth = AuthManager()
 scim_bearer = HTTPBearer(auto_error=False)
 
-def _hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+def _hash(value: str) -> str: return hashlib.sha256(value.encode("utf-8")).hexdigest()
 async def _org(user_id: str) -> Dict:
     if not supabase._initialized: await supabase.initialize()
     org = await supabase.get_organization_for_user(user_id)
     return org or await supabase.ensure_organization(user_id)
+
+@router.get("/auth/requirements")
+async def auth_requirements(user_id: str = Depends(get_current_user)):
+    org = await _org(user_id)
+    settings = supabase.client.table("organization_settings").select("require_mfa,require_sso").eq("organization_id", org["id"]).maybe_single().execute().data or {}
+    return {"organization_id": org["id"], "require_mfa": bool(settings.get("require_mfa")), "require_sso": bool(settings.get("require_sso"))}
+
+@router.patch("/auth/policy")
+async def update_auth_policy(payload: Dict[str, Any], user_id: str = Depends(auth.require_owner)):
+    org = await _org(user_id)
+    changes = {"organization_id": org["id"], "updated_at": datetime.now(timezone.utc).isoformat()}
+    if "require_mfa" in payload: changes["require_mfa"] = bool(payload["require_mfa"])
+    if "require_sso" in payload: changes["require_sso"] = bool(payload["require_sso"])
+    if len(changes) == 2: raise HTTPException(400, "No authentication policy changes supplied")
+    row = supabase.client.table("organization_settings").upsert(changes, on_conflict="organization_id").execute().data
+    return {"settings": row[0] if row else changes}
 
 @router.get("/identity")
 async def identity_connections(user_id: str = Depends(get_current_user)):
@@ -135,5 +150,4 @@ async def verify_domain(domain_id:str,user_id:str=Depends(auth.require_owner_or_
     except Exception: verified=False
     patch={"status":"verified" if verified else "pending","verified_at":datetime.now(timezone.utc).isoformat() if verified else None,"updated_at":datetime.now(timezone.utc).isoformat()}; r=supabase.client.table("custom_domains").update(patch).eq("id",domain_id).eq("organization_id",org["id"]).execute(); return {"domain":r.data[0],"verified":verified}
 
-# Keep billing endpoints mounted in the same enterprise API application.
 router.include_router(billing_router)
