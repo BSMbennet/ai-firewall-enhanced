@@ -1,13 +1,32 @@
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Dict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from jose import jwt
+import hashlib
+import secrets
 
 from app.supabase_client import SupabaseManager
 
 security = HTTPBearer(auto_error=False)
 supabase = SupabaseManager()
+
+API_KEY_SCOPES = {"chat:read", "chat:write", "audit:read", "analytics:read"}
+DEFAULT_API_KEY_SCOPES = ["chat:read", "chat:write"]
+
+
+def validate_api_key_scopes(scopes):
+    if scopes is None:
+        return list(DEFAULT_API_KEY_SCOPES)
+    if not isinstance(scopes, list) or not scopes:
+        raise HTTPException(status_code=400, detail="scopes must be a non-empty array")
+    normalized = [str(scope).strip().lower() for scope in scopes]
+    if len(set(normalized)) != len(normalized):
+        raise HTTPException(status_code=400, detail="scopes must not contain duplicates")
+    invalid = sorted(set(normalized) - API_KEY_SCOPES)
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Unsupported API-key scopes: {', '.join(invalid)}")
+    return sorted(normalized)
 
 
 def unauthorized(detail: str = "Could not validate credentials") -> HTTPException:
@@ -62,29 +81,14 @@ async def get_current_user(token: HTTPAuthorizationCredentials | None = Depends(
 
 class AuthManager:
     """Centralized organization authorization based on active organization membership."""
-
     async def _role(self, user_id: str) -> str | None:
-        """Resolve role from organization_members, never trust a client-supplied role.
-
-        The profile organization_id is used only to identify the user's organization;
-        authorization is granted only when an active membership row exists.
-        """
         if not supabase._initialized:
             await supabase.initialize()
         profile = await supabase.get_profile(user_id)
         org_id = profile.get("organization_id") if profile else None
         if not org_id:
             return None
-        membership = (
-            supabase.client.table("organization_members")
-            .select("role,status")
-            .eq("organization_id", org_id)
-            .eq("user_id", user_id)
-            .maybe_single()
-            .execute()
-            .data
-            or {}
-        )
+        membership = supabase.client.table("organization_members").select("role,status").eq("organization_id", org_id).eq("user_id", user_id).maybe_single().execute().data or {}
         if membership.get("status") != "active":
             return None
         role = membership.get("role")
@@ -115,8 +119,14 @@ class APIKeyManager:
     def __init__(self):
         self.supabase = supabase
 
-    async def create_api_key(self, user_id: str, name: str = None, expires_days: int = 30, application_id: str = None, employee_id: str = None) -> Dict:
-        return await self.supabase.create_api_key(user_id, name=name, expires_days=expires_days, application_id=application_id, employee_id=employee_id)
+    async def create_api_key(self, user_id: str, name: str = None, expires_days: int = 30, application_id: str = None, employee_id: str = None, scopes=None) -> Dict:
+        scopes = validate_api_key_scopes(scopes)
+        return await self.supabase.create_api_key(user_id, name=name, expires_days=expires_days, application_id=application_id, employee_id=employee_id, scopes=scopes)
+
+    def enforce_scope(self, key_data: Dict, required_scope: str) -> None:
+        scopes = {str(scope).lower() for scope in (key_data.get("scopes") or [])}
+        if required_scope not in scopes:
+            raise HTTPException(status_code=403, detail=f"API key scope required: {required_scope}")
 
     async def _enforce_billing(self, key_data: Dict):
         org_id = key_data.get("organization_id")
@@ -168,3 +178,17 @@ class APIKeyManager:
 
     async def list_keys(self, user_id: str) -> list:
         return await self.supabase.list_api_keys(user_id)
+
+    async def rotate_key(self, key_id: str, user_id: str, name: str = None, expires_days: int = 30, scopes=None, grace_minutes: int = 0) -> Dict:
+        scopes = validate_api_key_scopes(scopes)
+        new_key = f"aifw_{secrets.token_urlsafe(32)}"
+        expires_at = datetime.now(timezone.utc) + timedelta(days=max(1, min(int(expires_days), 3650)))
+        grace_until = None
+        if grace_minutes > 0:
+            grace_until = datetime.now(timezone.utc) + timedelta(minutes=min(int(grace_minutes), 1440))
+        result = self.supabase.client.rpc("rotate_api_key", {"p_actor_id": user_id, "p_key_id": key_id, "p_new_key_hash": hashlib.sha256(new_key.encode()).hexdigest(), "p_name": name, "p_expires_at": expires_at.isoformat(), "p_scopes": scopes, "p_grace_until": grace_until.isoformat() if grace_until else None}).execute()
+        if not result.data:
+            raise HTTPException(status_code=400, detail="Unable to rotate API key")
+        record = dict(result.data if isinstance(result.data, dict) else result.data[0])
+        record["key"] = new_key
+        return record
