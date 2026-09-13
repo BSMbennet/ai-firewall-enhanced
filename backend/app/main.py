@@ -125,9 +125,16 @@ async def invite_member(payload: Dict[str, Any], current_user: str = Depends(aut
         org = await supabase_manager.get_organization_for_user(current_user) or {}
         email_result = await email_service.send_employee_invitation(email=email, full_name=full_name, organization_name=org.get("name") or "your organization", role=role)
         return {"member": member, "message": "Employee invitation created", "email": email_result}
-    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        print(f"Employee invitation failed: {exc}"); raise HTTPException(status_code=502, detail="Unable to invite employee")
+    print(
+        "Employee invitation failed: "
+        f"{exc!r}"
+    )
+
+    raise HTTPException(
+        status_code=502,
+        detail="Unable to invite employee",
+    )
 
 @app.patch("/v1/organization/members/{member_id}")
 async def update_member(member_id: str, payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_admin)):
