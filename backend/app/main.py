@@ -48,10 +48,54 @@ app.include_router(enterprise_router)
 app.include_router(compliance_router)
 app.include_router(operations_router)
 
-frontend_urls = os.getenv("FRONTEND_URL", "http://localhost:5173")
-allowed_origins = [origin.strip().rstrip("/") for origin in frontend_urls.split(",") if origin.strip()]
-frontend_origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX", r"https://.*\.vercel\.app")
-app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_origin_regex=frontend_origin_regex, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# ---------------------------------------------------------
+# Secure CORS configuration
+# ---------------------------------------------------------
+
+frontend_urls = os.getenv(
+    "FRONTEND_URL",
+    "http://localhost:5173",
+)
+
+allowed_origins = [
+    origin.strip().rstrip("/")
+    for origin in frontend_urls.split(",")
+    if origin.strip()
+]
+
+cors_kwargs = {
+    "allow_origins": allowed_origins,
+    "allow_credentials": True,
+    "allow_methods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE",
+        "OPTIONS",
+    ],
+    "allow_headers": [
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "X-API-Key",
+    ],
+}
+
+# Optional regex support.
+# Keep FRONTEND_ORIGIN_REGEX empty in production unless required.
+frontend_origin_regex = os.getenv(
+    "FRONTEND_ORIGIN_REGEX",
+    "",
+).strip()
+
+if frontend_origin_regex:
+    cors_kwargs["allow_origin_regex"] = frontend_origin_regex
+
+app.add_middleware(
+    CORSMiddleware,
+    **cors_kwargs,
+)
 
 @app.get("/")
 async def root(): return {"service": "AI Firewall Enterprise API", "status": "online", "docs": "/docs"}
