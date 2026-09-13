@@ -266,5 +266,43 @@ async def get_audit_logs(limit:int=100,offset:int=0,user_id:str=None,current_use
     if user_id: query = query.eq("user_id", user_id)
     return query.order("timestamp", desc=True).limit(min(max(limit,1),500)).offset(max(offset,0)).execute().data or []
 
+# ---------------------------------------------------------
+# Error handlers
+# ---------------------------------------------------------
+
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request,exc): return JSONResponse(status_code=exc.status_code,content={"error":exc.detail,"timestamp":datetime.utcnow().isoformat()})
+async def http_exception_handler(
+    request: Request,
+    exc: HTTPException,
+):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(
+    request: Request,
+    exc: Exception,
+):
+    # Log the full technical error server-side only.
+    # Never expose provider/database/internal details to clients.
+    print(
+        "Unhandled exception: "
+        f"{request.method} {request.url.path} - {exc!r}"
+    )
+
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "message": "Internal server error",
+                "type": "internal_error",
+            },
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
