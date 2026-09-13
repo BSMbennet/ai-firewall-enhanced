@@ -126,7 +126,7 @@ async def invite_member(payload: Dict[str, Any], current_user: str = Depends(aut
         email_result = await email_service.send_employee_invitation(email=email, full_name=full_name, organization_name=org.get("name") or "your organization", role=role)
         return {"member": member, "message": "Employee invitation created", "email": email_result}
     except Exception as exc:
-    print(
+        print(
         "Employee invitation failed: "
         f"{exc!r}"
     )
