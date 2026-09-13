@@ -8,6 +8,8 @@ import EnterpriseOperations from './pages/EnterpriseOperations.jsx'
 import Compliance from './pages/Compliance.jsx'
 import Login from './pages/Login.jsx'
 import Register from './pages/Register.jsx'
+import ForgotPassword from './pages/ForgotPassword.jsx'
+import ResetPassword from './pages/ResetPassword.jsx'
 import Settings from './pages/Settings.jsx'
 import AppShell from './components/AppShell.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
@@ -17,9 +19,7 @@ const ADMIN_ROLES = ['owner', 'admin', 'security']
 const OWNER_ADMIN_ROLES = ['owner', 'admin']
 
 const SecurityLoading = ({ label = 'Initializing security enclave…' }) => (
-  <div className="min-h-screen bg-slate-950 flex items-center justify-center text-cyan-300">
-    {label}
-  </div>
+  <div className="min-h-screen bg-slate-950 flex items-center justify-center text-cyan-300">{label}</div>
 )
 
 const Forbidden = () => (
@@ -27,12 +27,8 @@ const Forbidden = () => (
     <div>
       <p className="text-cyan-300 text-sm font-semibold tracking-widest">403 // ACCESS DENIED</p>
       <h1 className="mt-3 text-2xl font-bold text-white">Insufficient permissions</h1>
-      <p className="mt-2 max-w-md text-sm text-slate-400">
-        Your account is authenticated, but this area requires an organization administrator or security role.
-      </p>
-      <a href="/dashboard" className="mt-6 inline-flex rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950">
-        Return to dashboard
-      </a>
+      <p className="mt-2 max-w-md text-sm text-slate-400">Your account is authenticated, but this area requires an organization administrator or security role.</p>
+      <a href="/dashboard" className="mt-6 inline-flex rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950">Return to dashboard</a>
     </div>
   </div>
 )
@@ -48,7 +44,7 @@ const ProtectedRoute = ({ children, roles }) => {
 
 const PublicOnly = ({ children }) => {
   const { user, loading } = useAuth()
-  if (loading) return null
+  if (loading) return <SecurityLoading />
   return user ? <Navigate to="/dashboard" replace /> : children
 }
 
@@ -66,6 +62,8 @@ export default function App() {
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
           <Route path="/register" element={<PublicOnly><Register /></PublicOnly>} />
+          <Route path="/forgot-password" element={<PublicOnly><ForgotPassword /></PublicOnly>} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         <Toaster position="top-right" />
