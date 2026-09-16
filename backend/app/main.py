@@ -191,7 +191,9 @@ async def create_api_key(payload: Dict[str, Any] | None = None, current_user: st
 
 @app.get("/v1/api-keys")
 async def list_api_keys(current_user: str = Depends(get_current_user)):
-    return {"keys": await api_key_manager.list_keys(current_user)}
+    return {
+    "keys": await api_key_manager.supabase.list_api_keys(current_user)
+}
 
 @app.delete("/v1/api-keys/{key_id}")
 async def revoke_api_key(key_id: str, current_user: str = Depends(auth_manager.require_admin)):
