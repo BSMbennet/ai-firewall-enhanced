@@ -8,9 +8,27 @@ class LLMRouter:
     """Route requests with automatic fallback"""
 
     def __init__(self):
-        self.openai_client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # The OpenAI client is created on first use so the application can be imported
+        # (tests, tooling, health checks) without provider credentials configured.
+        self._openai_client = None
         self.fallback_url = "https://api.anthropic.com/v1/messages"
         self.fallback_key = os.getenv("ANTHROPIC_API_KEY")
+
+    @property
+    def openai_client(self):
+        if self._openai_client is None:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise RuntimeError("OPENAI_API_KEY is not configured")
+            self._openai_client = openai.AsyncOpenAI(api_key=api_key)
+        return self._openai_client
+
+    def provider_status(self) -> Dict[str, bool]:
+        """Report which providers are *configured*. Makes no network or billable call."""
+        return {
+            "openai": bool(os.getenv("OPENAI_API_KEY")),
+            "anthropic": bool(self.fallback_key),
+        }
 
     @retry(
         stop=stop_after_attempt(3),

@@ -1,7 +1,17 @@
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
+import logging
 import re
 import asyncio
+
+logger = logging.getLogger("aifirewall.orchestrator")
+
+
+class InspectionUnavailable(Exception):
+    """Raised when a security check could not complete.
+
+    The gateway treats this as fail-closed: the request is not forwarded to any provider.
+    """
 
 @dataclass
 class SecurityResult:
@@ -46,11 +56,19 @@ class SecurityOrchestrator:
         ]
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        injection_score, injection_reason = results[0] if not isinstance(results[0], Exception) else (0, "")
-        pii_score, pii_detected = results[1] if not isinstance(results[1], Exception) else (0, False)
-        semantic_score = results[2] if not isinstance(results[2], Exception) else 0
-        context_score = results[3] if not isinstance(results[3], Exception) else 0
+
+        # Fail closed: a crashed check must never be interpreted as "nothing found".
+        failed = [r for r in results if isinstance(r, BaseException)]
+        if failed:
+            for error in failed:
+                logger.error("security_check_failed", extra={"request_id": request_id},
+                             exc_info=(type(error), error, error.__traceback__))
+            raise InspectionUnavailable(f"{len(failed)} security check(s) failed")
+
+        injection_score, injection_reason = results[0]
+        pii_score, pii_detected = results[1]
+        semantic_score = results[2]
+        context_score = results[3]
         
         # Calculate risk score
         risk_score = (

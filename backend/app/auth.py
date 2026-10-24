@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable
@@ -8,7 +9,10 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt
 
+from app.rbac import AI_USER_ROLES, AUDIT_READER_ROLES, BLOCKED_MEMBER_STATUSES
 from app.supabase_client import SupabaseManager
+
+logger = logging.getLogger("aifirewall.auth")
 
 
 security = HTTPBearer(auto_error=False)
@@ -56,6 +60,22 @@ async def enforce_org_auth_policy(
 
     if not organization_id:
         return
+
+    # Suspension/removal is enforced here, on every authenticated request, from the database
+    # (source of truth). Disabling the Supabase Auth user is only defence in depth: it cannot
+    # revoke an access token that was already issued.
+    membership = (
+        supabase.client
+        .table("organization_members")
+        .select("status")
+        .eq("organization_id", organization_id)
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+        .data
+    )
+    if membership and str(membership.get("status") or "active").lower() in BLOCKED_MEMBER_STATUSES:
+        raise forbidden("Access to this organization has been suspended")
 
     settings_response = (
         supabase.client
@@ -220,6 +240,26 @@ class AuthManager:
             raise forbidden("Organization owner permission required")
         return current_user
 
+    async def require_audit_reader(
+        self,
+        current_user: str = Depends(get_current_user),
+    ) -> str:
+        """Raw per-request audit rows: owner, admin, security and the read-only viewer (auditor) role."""
+        role = await self._role(current_user)
+        if role not in AUDIT_READER_ROLES:
+            raise forbidden("Audit read permission required")
+        return current_user
+
+    async def require_ai_user(
+        self,
+        current_user: str = Depends(get_current_user),
+    ) -> str:
+        """Interactive use of the AI gateway with a user session (not available to read-only viewers)."""
+        role = await self._role(current_user)
+        if role not in AI_USER_ROLES:
+            raise forbidden("This role is not permitted to submit AI requests")
+        return current_user
+
 
 # ---------------------------------------------------------------------------
 # API-key authorization
@@ -228,12 +268,15 @@ class AuthManager:
 class APIKeyManager:
     """API-key validation, scope enforcement, billing metering, and revocation."""
 
-    DEFAULT_CHAT_SCOPES = {
-        "chat",
-        "chat:read",
-        "chat:write",
-        "ai:request",
-        "*",
+    # Scopes that can be granted to a key. There is deliberately no wildcard.
+    VALID_SCOPES = frozenset({"chat"})
+    DEFAULT_SCOPES = ("chat",)
+
+    # Monthly request limits per plan, applied only when BILLING_ENFORCE=true.
+    PLAN_LIMITS: Dict[str, int | None] = {
+        "starter": 10_000,
+        "professional": 100_000,
+        "enterprise": None,
     }
 
     def __init__(self) -> None:
@@ -254,20 +297,18 @@ class APIKeyManager:
         except (TypeError, ValueError):
             safe_expires_days = 30
 
-        normalized_scopes = self.normalize_scopes(scopes)
-        result = await self.supabase.create_api_key(
+        normalized_scopes = self.normalize_scopes(scopes) if scopes is not None else set(self.DEFAULT_SCOPES)
+        unknown = normalized_scopes - self.VALID_SCOPES
+        if not normalized_scopes or unknown:
+            raise ValueError(f"Invalid API key scopes. Allowed: {', '.join(sorted(self.VALID_SCOPES))}")
+        return await self.supabase.create_api_key(
             user_id,
             name=safe_name,
             expires_days=safe_expires_days,
             application_id=application_id,
             employee_id=employee_id,
+            scopes=sorted(normalized_scopes),
         )
-
-        if not result:
-            return result
-        if isinstance(result, dict):
-            result.setdefault("scopes", sorted(normalized_scopes))
-        return result
 
     @staticmethod
     def normalize_scopes(scopes: Iterable[str] | None) -> set[str]:
@@ -302,8 +343,9 @@ class APIKeyManager:
             return True
         scopes = cls.extract_scopes(key_data)
         if not scopes:
-            return required in cls.DEFAULT_CHAT_SCOPES
-        return "*" in scopes or required in scopes
+            # Keys created before scopes existed carry no scope list and may only chat.
+            return required in cls.DEFAULT_SCOPES
+        return required in scopes
 
     @classmethod
     def require_scope(cls, key_data: Dict[str, Any], required_scope: str) -> None:
@@ -357,11 +399,7 @@ class APIKeyManager:
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
                     detail="Organization billing is not active",
                 )
-            limit = {
-                "starter": 10_000,
-                "professional": 100_000,
-                "enterprise": None,
-            }.get(subscription.get("plan_key"), 0)
+            limit = self.PLAN_LIMITS.get(subscription.get("plan_key"), 0)
 
         period_start = datetime.now(timezone.utc).date().replace(day=1).isoformat()
         result = self.supabase.client.rpc(
@@ -379,6 +417,10 @@ class APIKeyManager:
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Monthly AI request limit reached",
             )
+
+    async def enforce_usage(self, key_data: Dict[str, Any]) -> None:
+        """Atomically count this request against the organisation's monthly quota (raises 402/403/429)."""
+        await self._enforce_billing(key_data)
 
     async def record_gateway_outcome(
         self,
@@ -400,17 +442,60 @@ class APIKeyManager:
                     "p_tokens": max(0, int(tokens or 0)),
                 },
             ).execute()
-        except Exception as exc:
-            print(f"Gateway outcome metering failed: {exc}")
+        except Exception:
+            logger.error("gateway_outcome_metering_failed org=%s", organization_id, exc_info=True)
 
-    async def verify_api_key_value(self, api_key: str) -> Dict[str, Any]:
+    def _member_status(self, organization_id: str, **where: Any) -> str | None:
+        query = (
+            self.supabase.client.table("organization_members")
+            .select("status")
+            .eq("organization_id", organization_id)
+        )
+        for column, value in where.items():
+            query = query.eq(column, value)
+        row = query.maybe_single().execute().data
+        return str(row.get("status") or "active").lower() if row else None
+
+    async def _enforce_principal_active(self, key_data: Dict[str, Any]) -> None:
+        """A key is only as valid as the people and application it is bound to."""
+        organization_id = key_data.get("organization_id")
+        if not organization_id:
+            return
+        if self._member_status(organization_id, user_id=key_data.get("user_id")) in BLOCKED_MEMBER_STATUSES:
+            raise forbidden("The owner of this API key has been suspended")
+        if key_data.get("employee_id") and self._member_status(organization_id, id=key_data["employee_id"]) in BLOCKED_MEMBER_STATUSES:
+            raise forbidden("The employee this API key belongs to has been suspended")
+        application_id = key_data.get("application_id")
+        if application_id:
+            app_row = (
+                self.supabase.client.table("applications")
+                .select("status")
+                .eq("id", application_id)
+                .eq("organization_id", organization_id)
+                .maybe_single()
+                .execute()
+                .data
+            )
+            if not app_row or app_row.get("status") != "active":
+                raise forbidden("Application is disabled")
+
+    async def verify_api_key_value(
+        self,
+        api_key: str,
+        required_scope: str | None = None,
+        enforce_usage: bool = True,
+    ) -> Dict[str, Any]:
         if not api_key:
             raise unauthorized("Missing API key")
         key_data = await self.supabase.verify_api_key(api_key)
         if not key_data:
             raise unauthorized("Invalid or expired API key")
         self.validate_key_status(key_data)
-        await self._enforce_billing(key_data)
+        await self._enforce_principal_active(key_data)
+        if required_scope:
+            self.require_scope(key_data, required_scope)
+        if enforce_usage:
+            await self._enforce_billing(key_data)
         return key_data
 
     async def verify_api_key(
@@ -428,9 +513,11 @@ class APIKeyManager:
     ) -> Dict[str, Any]:
         if token is None or not token.credentials:
             raise unauthorized("Missing API key")
-        return await self.verify_api_key_value(token.credentials)
+        # Authenticates and authorises only; the endpoint meters usage after it has validated the payload
+        # so malformed requests do not consume quota.
+        return await self.verify_api_key_value(token.credentials, required_scope="chat", enforce_usage=False)
 
-    async def revoke_key(self, key_id: str, user_id: str) -> Any:
+    async def revoke_key(self, key_id: str, user_id: str) -> bool:
         return await self.supabase.revoke_key(key_id, user_id)
 
     async def list_keys(self, user_id: str) -> list:

@@ -10,26 +10,23 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
-          node-version: '18'
-      
-      - name: Install dependencies
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The frontend defines no test script yet; the production build is the gate. A failed build stops the deploy.
+      - name: Install and build
+        working-directory: frontend
         run: |
-          cd frontend
-          npm install
-      
-      - name: Run tests
-        run: |
-          cd frontend
-          npm test || true
-      
+          npm ci
+          npm run build
+
       - name: Deploy to Vercel
-        uses: amondnet/vercel-action@v20
+        uses: amondnet/vercel-action@v25
         with:
           vercel-token: ${{ secrets.VERCEL_TOKEN }}
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}

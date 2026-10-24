@@ -71,4 +71,4 @@ class HealthResponse(BaseModel):
     status: str
     timestamp: datetime
     version: str
-    services: Dict[str, bool]
+    services: Dict[str, Any] = Field(default_factory=dict)

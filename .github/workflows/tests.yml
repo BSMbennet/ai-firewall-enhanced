@@ -7,35 +7,24 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  backend-tests:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-
+    # The pinned numpy/scikit-learn versions are only buildable on the Python version the service runs
+    # (backend/.python-version). Test on exactly that version.
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python ${{ matrix.python-version }}
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version-file: backend/.python-version
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
 
       - name: Install dependencies
-        run: |
-          cd backend
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-cov
+        working-directory: backend
+        run: pip install -r requirements.txt
 
       - name: Run tests with coverage
-        run: |
-          cd backend
-          pytest --cov=app --cov-report=xml tests/
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./backend/coverage.xml
-          flags: unittests
-          name: codecov-umbrella
-          fail_ci_if_error: false
+        working-directory: backend
+        run: pytest --cov=app --cov-report=term-missing --cov-report=xml

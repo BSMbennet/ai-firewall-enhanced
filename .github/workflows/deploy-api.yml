@@ -7,27 +7,27 @@ on:
       - 'backend/**'
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      
+          python-version-file: backend/.python-version
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
-        run: |
-          cd backend
-          pip install -r requirements.txt
-      
+        working-directory: backend
+        run: pip install -r requirements.txt
+      # A failing test must stop the deployment: there is deliberately no `|| true` here.
       - name: Run tests
-        run: |
-          cd backend
-          pytest tests/ || true
-      
+        working-directory: backend
+        run: pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to Render
         uses: johnbeynon/render-deploy-action@v0.0.8
         with:

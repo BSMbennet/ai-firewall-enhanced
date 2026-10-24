@@ -2,11 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from typing import Any, Dict
 from datetime import datetime, timezone, timedelta
-import base64, hashlib, hmac, json, os, secrets
+import base64, hashlib, hmac, json, logging, os, secrets
 import httpx
 from cryptography.fernet import Fernet
+from app.audit import record_event
 from app.auth import AuthManager, get_current_user
 from app.supabase_client import SupabaseManager
+
+logger = logging.getLogger("aifirewall.operations")
 
 router = APIRouter(prefix="/v1/enterprise", tags=["enterprise-operations"])
 supabase = SupabaseManager()
@@ -86,7 +89,7 @@ async def list_alerts(status:str|None=None, limit:int=100, user_id:str=Depends(g
     return {"alerts":q.execute().data or []}
 
 @router.patch("/alerts/{alert_id}")
-async def update_alert(alert_id:str,payload:Dict[str,Any],user_id:str=Depends(get_current_user)):
+async def update_alert(alert_id:str,payload:Dict[str,Any],user_id:str=Depends(auth.require_security)):
     org=await _org(user_id); status=payload.get("status")
     if status not in {"open","acknowledged","resolved"}: raise HTTPException(400,"Invalid alert status")
     now=datetime.now(timezone.utc).isoformat(); changes={"status":status}
@@ -132,13 +135,13 @@ async def test_webhook(webhook_id:str,user_id:str=Depends(auth.require_owner_or_
     await dispatch_webhook_event(org["id"],"test.ping",{"message":"AI Firewall webhook test"}); return {"message":"Test delivery queued"}
 
 @router.get("/analytics")
-async def analytics(start:str|None=None,end:str|None=None,employee_id:str|None=None,application_id:str|None=None,action:str|None=None,search:str|None=None,limit:int=500,user_id:str=Depends(get_current_user)):
+async def analytics(start:str|None=None,end:str|None=None,employee_id:str|None=None,application_id:str|None=None,action:str|None=None,search:str|None=None,limit:int=500,user_id:str=Depends(auth.require_audit_reader)):
     org=await _org(user_id); q=supabase.client.table("audit_logs").select("*").eq("organization_id",org["id"]).order("timestamp",desc=True).limit(min(max(limit,1),2000))
     if start: q=q.gte("timestamp",start)
     if end: q=q.lte("timestamp",end)
     if employee_id: q=q.eq("employee_id",employee_id)
     if application_id: q=q.eq("application_id",application_id)
-    if action in {"ALLOW","BLOCK"}: q=q.eq("action",action)
+    if action in {"ALLOW","BLOCK","REVIEW"}: q=q.eq("action",action)
     rows=q.execute().data or []
     if search:
         needle=search.lower(); rows=[r for r in rows if needle in json.dumps(r,default=str).lower()]
@@ -149,11 +152,11 @@ async def analytics(start:str|None=None,end:str|None=None,employee_id:str|None=N
     return {"summary":{"total_requests":total,"blocked_requests":blocked,"block_rate":blocked/total*100 if total else 0,"total_cost":costs,"avg_latency_ms":sum(lat)/len(lat) if lat else 0},"timeline":[{"date":k,**v} for k,v in sorted(by_day.items())],"requests":rows}
 
 @router.get("/audit/search")
-async def audit_search(q:str|None=None,start:str|None=None,end:str|None=None,employee_id:str|None=None,application_id:str|None=None,action:str|None=None,limit:int=200,user_id:str=Depends(get_current_user)):
+async def audit_search(q:str|None=None,start:str|None=None,end:str|None=None,employee_id:str|None=None,application_id:str|None=None,action:str|None=None,limit:int=200,user_id:str=Depends(auth.require_audit_reader)):
     data=await analytics(start,end,employee_id,application_id,action,q,limit,user_id); return {"results":data["requests"],"summary":data["summary"]}
 
 @router.get("/audit/export")
-async def audit_export(start:str|None=None,end:str|None=None,employee_id:str|None=None,application_id:str|None=None,action:str|None=None,search:str|None=None,user_id:str=Depends(get_current_user)):
+async def audit_export(start:str|None=None,end:str|None=None,employee_id:str|None=None,application_id:str|None=None,action:str|None=None,search:str|None=None,user_id:str=Depends(auth.require_audit_reader)):
     data=await analytics(start,end,employee_id,application_id,action,search,2000,user_id); rows=data["requests"]
     if not rows: return Response(content="timestamp,action,risk_score,model,cost,latency_ms,reason\n",media_type="text/csv")
     headers=["timestamp","action","risk_score","model","cost","latency_ms","reason"]; lines=[",".join(headers)]
@@ -173,17 +176,60 @@ async def update_retention(payload:Dict[str,Any],user_id:str=Depends(auth.requir
 async def cleanup_retention(user_id:str=Depends(auth.require_owner_or_admin)):
     org=await _org(user_id); result=supabase.client.rpc("cleanup_expired_audit_logs",{"target_org":org["id"]}).execute(); return {"deleted":result.data or 0}
 
+MAX_ROTATION_GRACE_MINUTES = 7 * 24 * 60
+
+def _parse_ts(value):
+    if not value: return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
 @router.post("/api-keys/{key_id}/rotate")
 async def rotate_api_key(key_id:str,payload:Dict[str,Any]|None=None,user_id:str=Depends(auth.require_owner_or_admin)):
+    """Rotate a key without ever leaving two unintended live successors.
+
+    1. Claim the predecessor with a single conditional UPDATE (is_active AND rotated_at IS NULL). The database
+       applies it atomically, so of N concurrent rotations exactly one claims the row and the rest get 409.
+    2. Insert the successor (same org/app/employee/scopes). If this fails the claim is released and the old key
+       keeps working, so a failed rotation never strands the caller without a credential.
+    3. Retire the predecessor: immediately (grace_minutes=0) or when the capped grace window ends.
+    """
     org=await _org(user_id); old=supabase.client.table("api_keys").select("*").eq("id",key_id).eq("organization_id",org["id"]).maybe_single().execute().data
     if not old: raise HTTPException(404,"API key not found")
-    payload=payload or {}; days=max(1,min(int(payload.get("expires_days") or 30),3650)); grace=max(0,min(int(payload.get("grace_minutes") or 0),10080));
-    from app.supabase_client import SupabaseManager as SM
-    raw="aifw_"+secrets.token_urlsafe(32); expires=datetime.now(timezone.utc)+timedelta(days=days); grace_until=datetime.now(timezone.utc)+timedelta(minutes=grace) if grace else datetime.now(timezone.utc)
-    new=supabase.client.table("api_keys").insert({"user_id":user_id,"organization_id":org["id"],"application_id":old.get("application_id"),"employee_id":old.get("employee_id"),"key_hash":SM._hash_api_key(raw),"name":(old.get("name") or "API key")+" (rotated)","is_active":True,"expires_at":expires.isoformat(),"rotated_from":old["id"],"rotation_grace_until":grace_until.isoformat(),"key_prefix":raw[:12]}).execute().data
-    if not new: raise HTTPException(500,"Unable to rotate API key")
-    if grace==0: supabase.client.table("api_keys").update({"is_active":False,"revoked_at":datetime.now(timezone.utc).isoformat()}).eq("id",old["id"]).execute()
-    return {"key":raw,"id":new[0]["id"],"expires_at":new[0]["expires_at"],"old_key_id":old["id"],"old_key_grace_until":grace_until.isoformat() if grace else None}
+    payload=payload or {}
+    try:
+        days=max(1,min(int(payload.get("expires_days") or 30),3650)); grace=max(0,min(int(payload.get("grace_minutes") or 0),MAX_ROTATION_GRACE_MINUTES))
+    except (TypeError,ValueError): raise HTTPException(400,"expires_days and grace_minutes must be integers")
+    now=datetime.now(timezone.utc)
+    old_expiry=_parse_ts(old.get("expires_at"))
+    if not old.get("is_active") or old.get("revoked_at") or old.get("rotated_at") or (old_expiry and old_expiry<=now):
+        raise HTTPException(409,"API key is not active or has already been rotated")
+
+    claim=supabase.client.table("api_keys").update({"rotated_at":now.isoformat()}).eq("id",old["id"]).eq("organization_id",org["id"]).eq("is_active",True).is_("rotated_at","null").execute().data
+    if not claim: raise HTTPException(409,"API key is not active or has already been rotated")
+
+    raw="aifw_"+secrets.token_urlsafe(32)
+    try:
+        new=supabase.client.table("api_keys").insert({"user_id":old.get("user_id") or user_id,"organization_id":org["id"],"application_id":old.get("application_id"),"employee_id":old.get("employee_id"),"key_hash":SupabaseManager._hash_api_key(raw),"key_prefix":raw[:12],"name":(old.get("name") or "API key")+" (rotated)","is_active":True,"scopes":old.get("scopes") or ["chat"],"expires_at":(now+timedelta(days=days)).isoformat(),"rotated_from":old["id"]}).execute().data
+        if not new: raise RuntimeError("successor key was not created")
+    except Exception:
+        logger.error("api_key_rotation_failed key=%s org=%s",old["id"],org["id"],exc_info=True)
+        try: supabase.client.table("api_keys").update({"rotated_at":None}).eq("id",old["id"]).execute()
+        except Exception: logger.error("api_key_rotation_claim_release_failed key=%s",old["id"],exc_info=True)
+        await record_event(supabase,organization_id=org["id"],actor_user_id=user_id,action="api_key.rotated",resource_type="api_key",resource_id=old["id"],outcome="failure")
+        raise HTTPException(502,"Unable to rotate API key")
+
+    if grace==0:
+        retire={"is_active":False,"revoked_at":now.isoformat()}; grace_until=None
+    else:
+        grace_until=now+timedelta(minutes=grace)
+        retire={"rotation_grace_until":grace_until.isoformat(),"expires_at":min(old_expiry,grace_until).isoformat() if old_expiry else grace_until.isoformat()}
+    try: supabase.client.table("api_keys").update(retire).eq("id",old["id"]).execute()
+    except Exception: logger.error("api_key_predecessor_retire_failed key=%s",old["id"],exc_info=True)
+    await record_event(supabase,organization_id=org["id"],actor_user_id=user_id,action="api_key.rotated",resource_type="api_key",resource_id=old["id"],metadata={"new_key_id":new[0]["id"],"grace_minutes":grace})
+    return {"key":raw,"id":new[0]["id"],"expires_at":new[0]["expires_at"],"old_key_id":old["id"],"old_key_grace_until":grace_until.isoformat() if grace_until else None}
 
 @router.get("/onboarding")
 async def onboarding(user_id:str=Depends(get_current_user)):

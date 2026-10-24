@@ -3,8 +3,13 @@ import os
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta, timezone
 import hashlib
+import logging
 import secrets
 import re
+
+from app.rbac import ASSIGNABLE_ROLES, assert_can_grant, assert_can_manage
+
+logger = logging.getLogger("aifirewall.supabase")
 
 
 class SupabaseManager:
@@ -104,13 +109,34 @@ class SupabaseManager:
         result = self.client.table("organization_members").select("*").eq("organization_id", org["id"]).neq("status", "removed").order("created_at", desc=True).execute()
         return result.data or []
 
+    async def get_actor_role(self, organization_id: str, actor_id: str) -> Optional[str]:
+        """Role of ``actor_id`` inside ``organization_id`` from the membership table (falls back to the profile)."""
+        row = (self.client.table("organization_members").select("role")
+               .eq("organization_id", organization_id).eq("user_id", actor_id).maybe_single().execute().data)
+        if row and row.get("role"):
+            return str(row["role"]).strip().lower()
+        return await self.get_member_role(actor_id)
+
+    async def sync_auth_ban(self, user_id: str, banned: bool) -> str:
+        """Disable/enable the Supabase Auth user. Returns 'ok' or 'failed' (never raises, never silent).
+
+        The membership status in the database is what authorises requests; this call only stops new
+        sign-ins and token refreshes, so a failure is reported to the caller instead of being swallowed.
+        """
+        try:
+            self.client.auth.admin.update_user_by_id(user_id, {"ban_duration": "876000h" if banned else "none"})
+            return "ok"
+        except Exception:
+            logger.error("auth_ban_sync_failed user=%s banned=%s", user_id, banned, exc_info=True)
+            return "failed"
+
     async def invite_member(self, actor_id: str, email: str, full_name: str = "", role: str = "member") -> Dict:
         org = await self.get_organization_for_user(actor_id)
         if not org:
             org = await self.ensure_organization(actor_id)
-        allowed_roles = {"admin", "security", "developer", "member", "viewer"}
-        if role not in allowed_roles:
-            role = "member"
+        if role not in ASSIGNABLE_ROLES:
+            raise ValueError("Invalid role")
+        assert_can_grant(await self.get_actor_role(org["id"], actor_id), role)
         email = email.strip().lower()
         if not email or "@" not in email:
             raise ValueError("A valid employee email is required")
@@ -118,6 +144,10 @@ class SupabaseManager:
         invited_user = getattr(invite, "user", None)
         if invited_user is None:
             raise RuntimeError("Unable to create employee invitation")
+        existing_profile = await self.get_profile(str(invited_user.id))
+        existing_org = (existing_profile or {}).get("organization_id")
+        if existing_org and existing_org != org["id"]:
+            raise PermissionError("This user already belongs to another organization")
         member = self.client.table("organization_members").upsert({
             "organization_id": org["id"],
             "user_id": str(invited_user.id),
@@ -134,27 +164,41 @@ class SupabaseManager:
         return member.data[0] if member.data else {"user_id": str(invited_user.id), "email": email, "role": role, "status": "invited"}
 
     async def update_member(self, actor_id: str, member_id: str, status: Optional[str] = None, role: Optional[str] = None) -> Optional[Dict]:
+        """Change a member's status/role. Returns None if the member is not in the actor's organization.
+
+        Raises PermissionError when the role hierarchy forbids the change and ValueError for invalid input.
+        """
         org = await self.get_organization_for_user(actor_id)
         if not org:
             return None
-        changes = {}
-        if status in {"active", "suspended", "removed", "invited"}:
-            changes["status"] = status
-        if role in {"admin", "security", "developer", "member", "viewer"}:
-            changes["role"] = role
-        if not changes:
+        target = (self.client.table("organization_members").select("*")
+                  .eq("id", member_id).eq("organization_id", org["id"]).maybe_single().execute().data)
+        if not target:
             return None
-        changes["updated_at"] = datetime.now(timezone.utc).isoformat()
-        result = self.client.table("organization_members").update(changes).eq("id", member_id).eq("organization_id", org["id"]).execute()
+        if status is not None and status not in {"active", "suspended", "removed", "invited"}:
+            raise ValueError("Invalid status")
+        if role is not None and role not in ASSIGNABLE_ROLES:
+            raise ValueError("Invalid role")
+        if status is None and role is None:
+            raise ValueError("No changes supplied")
+        assert_can_manage(await self.get_actor_role(org["id"], actor_id), target.get("role"),
+                          new_role=role, is_self=target.get("user_id") == actor_id)
+        changes: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        if status is not None:
+            changes["status"] = status
+        if role is not None:
+            changes["role"] = role
+        result = (self.client.table("organization_members").update(changes)
+                  .eq("id", member_id).eq("organization_id", org["id"]).execute())
         if not result.data:
             return None
         member = result.data[0]
         self.client.table("profiles").update({"role": member["role"]}).eq("id", member["user_id"]).execute()
+        member["auth_sync"] = "not_applicable"
         if status in {"suspended", "removed"}:
-            try:
-                self.client.auth.admin.update_user_by_id(member["user_id"], {"ban_duration": "876000h"})
-            except Exception:
-                pass
+            member["auth_sync"] = await self.sync_auth_ban(member["user_id"], banned=True)
+        elif status == "active" and target.get("status") in {"suspended", "removed"}:
+            member["auth_sync"] = await self.sync_auth_ban(member["user_id"], banned=False)
         return member
 
     async def list_applications(self, user_id: str) -> List[Dict]:
@@ -216,7 +260,7 @@ class SupabaseManager:
     def _hash_api_key(api_key: str) -> str:
         return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
 
-    async def create_api_key(self, user_id: str, name: str = None, expires_days: int = 30, application_id: str = None, employee_id: str = None) -> Dict:
+    async def create_api_key(self, user_id: str, name: str = None, expires_days: int = 30, application_id: str = None, employee_id: str = None, scopes: Optional[List[str]] = None) -> Dict:
         if not self._initialized:
             await self.initialize()
         org = await self.get_organization_for_user(user_id)
@@ -230,8 +274,10 @@ class SupabaseManager:
             "application_id": application_id,
             "employee_id": employee_id,
             "key_hash": self._hash_api_key(api_key),
+            "key_prefix": api_key[:12],
             "name": name,
             "is_active": True,
+            "scopes": list(scopes) if scopes else ["chat"],
             "expires_at": expires_at.isoformat(),
         }
         result = self.client.table("api_keys").insert(data).execute()
@@ -247,7 +293,7 @@ class SupabaseManager:
         org = await self.get_organization_for_user(user_id)
         if not org:
             return []
-        result = self.client.table("api_keys").select("id,name,is_active,expires_at,created_at,revoked_at,last_used_at,application_id,employee_id").eq("organization_id", org["id"]).order("created_at", desc=True).execute()
+        result = self.client.table("api_keys").select("id,name,is_active,expires_at,created_at,revoked_at,last_used_at,application_id,employee_id,scopes,key_prefix,rotated_from").eq("organization_id", org["id"]).order("created_at", desc=True).execute()
         return result.data or []
 
     async def verify_api_key(self, api_key: str) -> Optional[Dict]:
@@ -268,13 +314,17 @@ class SupabaseManager:
         self.client.table("api_keys").update({"last_used_at": datetime.now(timezone.utc).isoformat()}).eq("id", key_data["id"]).execute()
         return key_data
 
-    async def revoke_key(self, key_id: str, user_id: str):
+    async def revoke_key(self, key_id: str, user_id: str) -> bool:
+        """Revoke a key in the actor's organization. Returns False when no such key exists there."""
         if not self._initialized:
             await self.initialize()
         org = await self.get_organization_for_user(user_id)
         if not org:
-            return
-        self.client.table("api_keys").update({"is_active": False, "revoked_at": datetime.now(timezone.utc).isoformat()}).eq("id", key_id).eq("organization_id", org["id"]).execute()
+            return False
+        result = (self.client.table("api_keys")
+                  .update({"is_active": False, "revoked_at": datetime.now(timezone.utc).isoformat()})
+                  .eq("id", key_id).eq("organization_id", org["id"]).execute())
+        return bool(result.data)
 
     async def log_audit(self, log_data: Dict[str, Any]):
         if not self._initialized:

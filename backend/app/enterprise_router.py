@@ -4,6 +4,7 @@ from typing import Any, Dict
 from datetime import datetime, timezone, timedelta
 import hashlib, secrets, re, os
 import httpx
+from app.audit import record_event
 from app.auth import AuthManager, get_current_user
 from app.supabase_client import SupabaseManager
 from app.billing_router import router as billing_router
@@ -117,16 +118,20 @@ async def scim_update_user(org_slug:str,member_id:str,payload:Dict[str,Any],cred
     if active is not None: changes["status"]="active" if bool(active) else "suspended"
     if payload.get("displayName"): changes["full_name"]=str(payload["displayName"])[:120]
     if changes: supabase.client.table("organization_members").update(changes).eq("id",member_id).eq("organization_id",org["id"]).execute()
+    if "status" in changes and m.get("user_id"):
+        # Membership status already blocks API access; this also stops new sign-ins/refreshes (and reports failure in the audit trail).
+        sync=await supabase.sync_auth_ban(m["user_id"],banned=changes["status"]!="active")
+        await record_event(supabase,organization_id=org["id"],actor_user_id=None,action="member.scim_status_changed",resource_type="member",resource_id=member_id,outcome="success" if sync=="ok" else "partial",metadata={"status":changes["status"],"auth_sync":sync,"scim_token_id":t["id"]})
     m.update(changes); return _scim_user(m)
 
 @router.get("/activity/employees/{member_id}")
-async def employee_activity(member_id:str,limit:int=100,user_id:str=Depends(get_current_user)):
+async def employee_activity(member_id:str,limit:int=100,user_id:str=Depends(auth.require_audit_reader)):
     org=await _org(user_id); m=supabase.client.table("organization_members").select("*").eq("organization_id",org["id"]).eq("id",member_id).maybe_single().execute().data
     if not m: raise HTTPException(404,"Employee not found")
     limit=min(max(limit,1),500); logs=supabase.client.table("audit_logs").select("*").eq("organization_id",org["id"]).eq("employee_id",member_id).order("timestamp",desc=True).limit(limit).execute().data or []; events=supabase.client.table("security_events").select("*").eq("organization_id",org["id"]).eq("employee_id",member_id).order("timestamp",desc=True).limit(limit).execute().data or []
     return {"employee":m,"requests":logs,"security_events":events}
 @router.get("/activity/applications/{application_id}")
-async def application_activity(application_id:str,limit:int=100,user_id:str=Depends(get_current_user)):
+async def application_activity(application_id:str,limit:int=100,user_id:str=Depends(auth.require_audit_reader)):
     org=await _org(user_id); a=supabase.client.table("applications").select("*").eq("organization_id",org["id"]).eq("id",application_id).maybe_single().execute().data
     if not a: raise HTTPException(404,"Application not found")
     limit=min(max(limit,1),500); logs=supabase.client.table("audit_logs").select("*").eq("organization_id",org["id"]).eq("application_id",application_id).order("timestamp",desc=True).limit(limit).execute().data or []; events=supabase.client.table("security_events").select("*").eq("organization_id",org["id"]).eq("application_id",application_id).order("timestamp",desc=True).limit(limit).execute().data or []
