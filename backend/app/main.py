@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import Any, Dict, List
@@ -11,7 +11,8 @@ load_dotenv()
 
 from app.audit import record_event
 from app.auth import AuthManager, get_current_user, APIKeyManager
-from app.gateway import GatewayError, enforce_model_policy, parse_chat_payload
+from app.gateway import GatewayError, effective_rate_limit, enforce_model_policy, parse_chat_payload
+from app.limits import UpstashStore, env_int, lifecycle_limit, rate_limiter
 from app.orchestrator import InspectionUnavailable, SecurityOrchestrator
 from app.llm_router import LLMRouter
 from app.supabase_client import SupabaseManager
@@ -37,6 +38,7 @@ upstash_cache = UpstashCache()
 r2_storage = CloudflareR2()
 monitor = BetterStackMonitor()
 metrics = MetricsCollector()
+rate_limiter.primary = UpstashStore(lambda: upstash_cache.client)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -141,7 +143,7 @@ async def _org_id_for(user_id: str) -> str | None:
     org = await supabase_manager.get_organization_for_user(user_id)
     return org["id"] if org else None
 
-@app.post("/v1/organization/members")
+@app.post("/v1/organization/members", dependencies=[Depends(lifecycle_limit("member_invite", 20, 600))])
 async def invite_member(payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_admin)):
     email = str(payload.get("email") or "").strip().lower(); full_name = str(payload.get("full_name") or "").strip(); role = str(payload.get("role") or "member")
     try:
@@ -215,7 +217,7 @@ async def get_org_stats(current_user: str = Depends(get_current_user)):
 async def get_org_activity(limit: int = 50, current_user: str = Depends(auth_manager.require_audit_reader)):
     return {"activity": await supabase_manager.get_org_activity(current_user, min(max(limit, 1), 200))}
 
-@app.post("/v1/api-keys")
+@app.post("/v1/api-keys", dependencies=[Depends(lifecycle_limit("api_key_create", 10, 600))])
 async def create_api_key(payload: Dict[str, Any] | None = None, current_user: str = Depends(auth_manager.require_admin)):
     payload = payload or {}; name = str(payload.get("name") or "Default Key")[:100]
     try:
@@ -244,7 +246,7 @@ async def create_api_key(payload: Dict[str, Any] | None = None, current_user: st
 async def list_api_keys(current_user: str = Depends(get_current_user)):
     return {"keys": await api_key_manager.supabase.list_api_keys(current_user)}
 
-@app.delete("/v1/api-keys/{key_id}")
+@app.delete("/v1/api-keys/{key_id}", dependencies=[Depends(lifecycle_limit("api_key_revoke", 30, 600))])
 async def revoke_api_key(key_id: str, current_user: str = Depends(auth_manager.require_admin)):
     organization_id = await _org_id_for(current_user)
     if not await api_key_manager.revoke_key(key_id, current_user):
@@ -332,16 +334,40 @@ async def run_firewall_pipeline(prompt: str, model: str, max_tokens: int, temper
 async def _update_audit(audit_id: str, patch: Dict[str, Any]):
     supabase_manager.client.table("audit_logs").update(patch).eq("id", audit_id).execute()
 
+async def _enforce_rate_limits(ctx: Dict[str, Any], policies: list, request_id: str, principal_id: str):
+    """Per-principal then per-organisation limits. Runs before quota metering so rejected requests are not billed.
+
+    Returns the principal's Decision (used for X-RateLimit-* headers) or raises GatewayError(429)."""
+    org_id = ctx.get("organization_id")
+    checks = [("gw_principal", principal_id, effective_rate_limit(policies, env_int("GATEWAY_RATE_LIMIT_PER_MINUTE", 60)))]
+    if org_id:
+        checks.append(("gw_org", str(org_id), env_int("GATEWAY_ORG_RATE_LIMIT_PER_MINUTE", 600)))
+    first = None
+    for scope, identifier, limit in checks:
+        decision = await rate_limiter.check(scope, identifier, limit, 60)
+        first = first or decision
+        if not decision.allowed:
+            if decision.first_rejection:  # one audit event per window, so a flood cannot also flood the audit table
+                await _safely("rate_limit_audit", record_event(supabase_manager, organization_id=org_id, actor_user_id=ctx.get("user_id"), action="rate_limit.exceeded", resource_type=scope, resource_id=identifier, outcome="denied", request_id=request_id, metadata={"limit": limit, "window_seconds": 60}))
+            raise GatewayError(429, "rate_limit_exceeded", "Rate limit exceeded. Retry after the interval in the Retry-After header.", "rate_limit_error", headers=decision.headers())
+    return first
+
 @app.post("/v1/chat/completions")
-async def chat_completions(payload: Dict[str, Any], key_data: Dict = Depends(api_key_manager.verify_api_key_context)):
+async def chat_completions(payload: Dict[str, Any], response: Response, key_data: Dict = Depends(api_key_manager.verify_api_key_context)):
     request_id = current_request_id() or str(uuid.uuid4())
     try:
+        policies = await _load_policies(key_data.get("organization_id"))
+        # Rate limiting precedes payload parsing so malformed floods are throttled too, and quota metering so
+        # throttled requests are never counted against the monthly allowance.
+        decision = await _enforce_rate_limits(key_data, policies, request_id, str(key_data.get("id") or key_data["user_id"]))
         chat_request = parse_chat_payload(payload)
-        enforce_model_policy(chat_request.model, await _load_policies(key_data.get("organization_id")))
+        enforce_model_policy(chat_request.model, policies)
         await api_key_manager.enforce_usage(key_data)  # count the request only once it is valid and permitted
         result = await run_firewall_pipeline(chat_request.prompt, chat_request.model, chat_request.max_tokens, chat_request.temperature, key_data["user_id"], request_id, key_data)
     except GatewayError as exc:
-        return JSONResponse(status_code=exc.status_code, content=exc.body(request_id))
+        return JSONResponse(status_code=exc.status_code, content=exc.body(request_id), headers=exc.headers)
+    if decision:
+        response.headers.update({k: v for k, v in decision.headers().items() if k.startswith("X-RateLimit")})
     if result["decision"] == "BLOCK":
         return JSONResponse(status_code=403, content={"error": {"message": "Request blocked by AI Firewall security policy", "type": "firewall_blocked", "code": "security_policy", "risk_score": result["risk_score"], "reason": result["reason"]}, "request_id": request_id})
     if result["decision"] == "REVIEW":
@@ -357,11 +383,13 @@ async def secure_query(request: SecurityRequest, current_user: str = Depends(aut
     member = supabase_manager.client.table("organization_members").select("id").eq("organization_id", org["id"]).eq("user_id", current_user).maybe_single().execute().data
     context = {"user_id": current_user, "organization_id": org["id"], "application_id": None, "employee_id": (member or {}).get("id")}
     try:
-        enforce_model_policy(model, await _load_policies(org["id"]))
+        policies = await _load_policies(org["id"])
+        await _enforce_rate_limits(context, policies, request_id, current_user)
+        enforce_model_policy(model, policies)
         await api_key_manager.enforce_usage(context)
         result = await run_firewall_pipeline(request.prompt, model, request.max_tokens or 1000, request.temperature if request.temperature is not None else 0.7, current_user, request_id, context)
     except GatewayError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+        raise HTTPException(status_code=exc.status_code, detail=exc.message, headers=exc.headers)
     if result["decision"] == "BLOCK": return SecurityResponse(request_id=request_id, allowed=False, blocked=True, message="Request blocked by security policy", risk_score=result["risk_score"], reason=result["reason"], timestamp=datetime.utcnow())
     if result["decision"] == "REVIEW": return SecurityResponse(request_id=request_id, allowed=False, blocked=False, message="Request held for security review", risk_score=result["risk_score"], reason=result["reason"], timestamp=datetime.utcnow())
     return SecurityResponse(request_id=request_id, allowed=True, blocked=False, response=result["response"], usage=result["usage"], risk_score=result["risk_score"], security_metadata={"gateway": True}, timestamp=datetime.utcnow())

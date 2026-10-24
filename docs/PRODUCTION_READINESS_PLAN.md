@@ -123,7 +123,8 @@ installed for the repo) — work is committed locally on branch `production-read
 | 4 | API-key scopes / expiry / revoke / rotate | IN PROGRESS | F-03, F-06 |
 | 5 | Secure gateway & provider adapters | NOT STARTED | F-09, F-16, F-17, F-19 |
 | 6 | Firewall pipeline & policy engine | IN PROGRESS | F-01, F-02 fixed first; F-18 NOT STARTED |
-| 7 | Usage, budgets, rate limiting | NOT STARTED | F-10, F-15 |
+| 7 | Request-rate limits: gateway (per key + per org + policy override) and credential-lifecycle endpoints; documented degraded-store policy | IMPLEMENTED | F-10. 38 tests incl. Lua atomicity on real Redis 7.0. NOT verified on Upstash. Gaps: no unauthenticated/IP limiting, no token quotas or cost budgets, fixed window |
+| 7 | Usage trends/cost accuracy, SQL-side stats | NOT STARTED | F-15, F-16 |
 | 8 | Audit logging, alerts, reporting | NOT STARTED | F-20 |
 | 9 | Webhooks: SSRF guard, signed + replay-protected, bounded retries off request path | IMPLEMENTED | F-12. 46 tests incl. pinned-transport check. NOT VERIFIED against a real TLS receiver. Gaps: retries are in-process (a restart drops in-flight retries; row stays `pending`); no secret-rotation endpoint yet |
 | 9 | Enterprise SSO (OIDC/SAML) | NOT STARTED | F-13 |
@@ -156,6 +157,9 @@ _Appended as work is verified (command, date, result)._
 | 2026-10-24 #3 | new `app/webhook_security.py`; `operations_router` wired to it; `pytest -q` | **124 passed** (46 new webhook tests: 17 unsafe-URL cases, DNS-rebinding/mixed-answer rejection, signature tamper/replay, retry policy, revalidation at delivery, pinned IP/Host/SNI/no-redirect, role + tenant checks, secret never listed/logged, legacy-key decrypt) |
 
 | 2026-10-24 #4 | new `app/observability.py` (+ `main.py` wiring); `pytest -q` | first run 5 failed: redactor leaked `Authorization: Basic <creds>` and `SUPABASE_SERVICE_ROLE_KEY=<v>` (word-boundary bug) -> fixed; 3 test errors (admin-only key creation; client-side httpx log) -> fixed; **F-26 discovered** (gateway allowed "Ignore all previous instructions…"). Final: **162 passed, 1 xfailed** (strict, F-26) |
+
+| 2026-10-24 #5 | new `app/limits.py`, wired into gateway + 6 lifecycle endpoints; `pytest -q -rs` | **200 passed, 1 xfailed, 0 skipped** (38 limiter tests; 400 concurrent checks admit exactly the limit on a real Redis; TTL-less key repaired; store down/hanging -> per-instance enforcement; 429 requests not metered against monthly quota; one audit event per window) |
+| 2026-10-24 #5 | `REQUIRE_REDIS=1 pytest tests/test_limits.py`; workflow YAML parsed | 38 passed; CI jobs now install redis-server and fail rather than skip if it is missing |
 
 ## 4. Working-tree state (must be committed by the owner)
 

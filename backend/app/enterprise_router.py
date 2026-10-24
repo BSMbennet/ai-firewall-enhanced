@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 import hashlib, secrets, re, os
 import httpx
 from app.audit import record_event
+from app.limits import lifecycle_limit
 from app.auth import AuthManager, get_current_user
 from app.supabase_client import SupabaseManager
 from app.billing_router import router as billing_router
@@ -59,7 +60,7 @@ async def update_identity_connection(connection_id:str,payload:Dict[str,Any],use
     if not r.data: raise HTTPException(404,"Identity connection not found")
     safe=dict(r.data[0]); safe.pop("client_secret_hash",None); safe.pop("client_id",None); return {"connection":safe}
 
-@router.post("/scim/tokens")
+@router.post("/scim/tokens", dependencies=[Depends(lifecycle_limit("scim_token_create", 10, 600))])
 async def create_scim_token(payload:Dict[str,Any]|None=None,user_id:str=Depends(auth.require_owner_or_admin)):
     org=await _org(user_id); payload=payload or {}; token="scim_"+secrets.token_urlsafe(36); days=max(1,min(int(payload.get("expires_days") or 365),3650)); r=supabase.client.table("scim_tokens").insert({"organization_id":org["id"],"name":str(payload.get("name") or "SCIM token")[:120],"token_hash":_hash(token),"expires_at":(datetime.now(timezone.utc)+timedelta(days=days)).isoformat(),"created_by":user_id}).execute()
     if not r.data: raise HTTPException(500,"Unable to create SCIM token")

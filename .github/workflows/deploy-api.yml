@@ -19,10 +19,14 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: pip install -r requirements.txt
+      - name: Install Redis (verifies the rate-limit Lua script against a real server)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq redis-server
       # A failing test must stop the deployment: there is deliberately no `|| true` here.
       - name: Run tests
         working-directory: backend
         run: pytest -q
+        env:
+          REQUIRE_REDIS: '1'
 
   deploy:
     needs: test

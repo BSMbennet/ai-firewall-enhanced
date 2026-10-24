@@ -15,8 +15,10 @@ MODEL_PROVIDERS = (("gpt-", "openai"), ("claude-", "anthropic"))
 
 
 class GatewayError(Exception):
-    def __init__(self, status_code: int, code: str, message: str, error_type: str = "invalid_request_error"):
+    def __init__(self, status_code: int, code: str, message: str, error_type: str = "invalid_request_error",
+                 headers: Optional[Dict[str, str]] = None):
         super().__init__(message)
+        self.headers = headers
         self.status_code = status_code
         self.code = code
         self.message = message
@@ -123,3 +125,20 @@ def enforce_model_policy(model: str, policies: List[Dict[str, Any]]) -> str:
     if allow["models"] is not None and model.strip().lower() not in allow["models"]:
         raise GatewayError(400, "model_not_allowed", "The requested model is not approved for this organization")
     return provider
+
+
+def effective_rate_limit(policies: Iterable[Dict[str, Any]], default: int) -> int:
+    """Per-principal requests/minute: the most restrictive valid ``rate_limit_per_minute`` among the organisation's
+    policies, otherwise ``default``. Invalid or non-positive values are ignored (never treated as "unlimited")."""
+    values = []
+    for policy in policies:
+        raw = policy.get("rate_limit_per_minute")
+        if isinstance(raw, bool):
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            values.append(value)
+    return min(values) if values else default

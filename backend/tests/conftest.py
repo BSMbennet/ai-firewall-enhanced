@@ -42,6 +42,17 @@ class RecordingProvider:
                 "model": model, "cost": 0}
 
 
+@pytest.fixture(autouse=True)
+def isolated_rate_limiter(monkeypatch):
+    """The limiter is process-wide state; every test starts with empty counters and no shared store."""
+    import app.limits as limits
+
+    fresh = limits.RateLimiter()
+    for name in ("primary", "fallback", "_last_degraded_log"):
+        monkeypatch.setattr(limits.rate_limiter, name, getattr(fresh, name), raising=True)
+    yield limits.rate_limiter
+
+
 @pytest.fixture
 def db() -> FakeDB:
     return FakeDB()

@@ -6,6 +6,7 @@ import asyncio, base64, hashlib, json, logging, os, secrets
 import httpx
 from cryptography.fernet import Fernet, MultiFernet
 from app.audit import record_event
+from app.limits import lifecycle_limit
 from app.webhook_security import UnsafeWebhookURL, deliver_with_retries, resolve_public_target
 from app.auth import AuthManager, get_current_user
 from app.supabase_client import SupabaseManager
@@ -141,7 +142,7 @@ async def create_alert_rule(payload:Dict[str,Any],user_id:str=Depends(auth.requi
 async def list_webhooks(user_id:str=Depends(get_current_user)):
     org=await _org(user_id); rows=supabase.client.table("webhook_integrations").select("id,name,url,events,is_active,created_at,updated_at").eq("organization_id",org["id"]).order("created_at",desc=True).execute().data or []; return {"webhooks":rows}
 
-@router.post("/webhooks")
+@router.post("/webhooks", dependencies=[Depends(lifecycle_limit("webhook_create", 10, 600))])
 async def create_webhook(payload:Dict[str,Any],user_id:str=Depends(auth.require_owner_or_admin)):
     org=await _org(user_id); url=str(payload.get("url") or "").strip()
     try:
@@ -220,7 +221,7 @@ def _parse_ts(value):
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
-@router.post("/api-keys/{key_id}/rotate")
+@router.post("/api-keys/{key_id}/rotate", dependencies=[Depends(lifecycle_limit("api_key_rotate", 10, 600))])
 async def rotate_api_key(key_id:str,payload:Dict[str,Any]|None=None,user_id:str=Depends(auth.require_owner_or_admin)):
     """Rotate a key without ever leaving two unintended live successors.
 
