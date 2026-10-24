@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from typing import Any, Dict
 from datetime import datetime, timezone, timedelta
-import base64, hashlib, hmac, json, logging, os, secrets
+import asyncio, base64, hashlib, json, logging, os, secrets
 import httpx
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 from app.audit import record_event
+from app.webhook_security import UnsafeWebhookURL, deliver_with_retries, resolve_public_target
 from app.auth import AuthManager, get_current_user
 from app.supabase_client import SupabaseManager
 
@@ -15,12 +16,20 @@ router = APIRouter(prefix="/v1/enterprise", tags=["enterprise-operations"])
 supabase = SupabaseManager()
 auth = AuthManager()
 
-def _key_cipher():
-    seed = os.getenv("WEBHOOK_ENCRYPTION_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
-    if not seed:
+def _fernet_for(seed: str) -> Fernet:
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(seed.encode()).digest()))
+
+def _key_cipher() -> MultiFernet:
+    """Encrypts with WEBHOOK_ENCRYPTION_KEY. Secrets stored before that variable existed were encrypted with a key
+    derived from the service-role key, so it is accepted for *decryption only* as a legacy fallback."""
+    primary = os.getenv("WEBHOOK_ENCRYPTION_KEY") or ""
+    legacy = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
+    if not primary and not legacy:
         raise RuntimeError("Webhook encryption key is not configured")
-    key = base64.urlsafe_b64encode(hashlib.sha256(seed.encode()).digest())
-    return Fernet(key)
+    if not primary:
+        logger.warning("webhook_encryption_key_missing: falling back to a key derived from the service-role key; set WEBHOOK_ENCRYPTION_KEY")
+    seeds = [seed for seed in (primary, legacy) if seed]
+    return MultiFernet([_fernet_for(seed) for seed in seeds])
 
 def _encrypt(value: str) -> str:
     return _key_cipher().encrypt(value.encode()).decode()
@@ -65,22 +74,41 @@ async def emit_security_alert(org_id: str, event_type: str, title: str, message:
     await dispatch_webhook_event(org_id, event_type, {"title":title,"message":message,"severity":severity,"metadata":metadata})
     return alert[0] if alert else None
 
+_background_tasks: set = set()
+_delivery_slots = asyncio.Semaphore(int(os.getenv("WEBHOOK_MAX_CONCURRENT_DELIVERIES", "20")))
+
+async def _deliver_and_record(hook: Dict[str, Any], delivery_id: str | None, event_id: str, event_type: str, raw: bytes):
+    """Runs outside the request path. Concurrency is bounded so a burst of events cannot exhaust connections."""
+    async with _delivery_slots:
+        try:
+            secret = _decrypt(hook["secret_encrypted"])
+            result = await deliver_with_retries(hook["url"], secret, event_id, event_type, raw)
+            patch = {"attempts": result.attempts, "response_code": result.response_code, "status": result.status,
+                     "delivered_at": datetime.now(timezone.utc).isoformat() if result.status == "delivered" else None,
+                     "last_error": result.error}
+        except Exception as exc:
+            logger.error("webhook_delivery_failed webhook=%s", hook.get("id"), exc_info=True)
+            patch = {"attempts": 1, "status": "failed", "last_error": type(exc).__name__}
+        if delivery_id:
+            try:
+                supabase.client.table("webhook_deliveries").update(patch).eq("id", delivery_id).execute()
+            except Exception:
+                logger.error("webhook_delivery_record_failed delivery=%s", delivery_id, exc_info=True)
+
 async def dispatch_webhook_event(org_id: str, event_type: str, payload: Dict[str, Any]):
+    """Queue deliveries for every matching active webhook of ``org_id`` and return immediately."""
     if not supabase._initialized: await supabase.initialize()
     hooks = supabase.client.table("webhook_integrations").select("*").eq("organization_id", org_id).eq("is_active", True).execute().data or []
-    body = {"id":str(secrets.token_hex(16)),"type":event_type,"created_at":datetime.now(timezone.utc).isoformat(),"organization_id":org_id,"data":payload}
+    event_id = secrets.token_hex(16)
+    body = {"id": event_id, "type": event_type, "created_at": datetime.now(timezone.utc).isoformat(), "organization_id": org_id, "data": payload}
+    raw = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode()
     for hook in hooks:
         events = hook.get("events") or []
         if events and event_type not in events and "*" not in events: continue
-        delivery = supabase.client.table("webhook_deliveries").insert({"organization_id":org_id,"webhook_id":hook["id"],"event_type":event_type,"payload":body,"status":"pending","attempts":0}).execute().data
-        try:
-            secret = _decrypt(hook["secret_encrypted"]); raw = json.dumps(body,separators=(",",":"),ensure_ascii=False); signature = hmac.new(secret.encode(),raw.encode(),hashlib.sha256).hexdigest()
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(hook["url"],content=raw,headers={"Content-Type":"application/json","X-AI-Firewall-Event":event_type,"X-AI-Firewall-Signature":f"sha256={signature}"})
-            patch={"attempts":1,"response_code":r.status_code,"status":"delivered" if 200<=r.status_code<300 else "failed","delivered_at":datetime.now(timezone.utc).isoformat() if 200<=r.status_code<300 else None,"last_error":None if 200<=r.status_code<300 else r.text[:500]}
-        except Exception as exc:
-            patch={"attempts":1,"status":"failed","last_error":str(exc)[:500]}
-        if delivery: supabase.client.table("webhook_deliveries").update(patch).eq("id",delivery[0]["id"]).execute()
+        delivery = supabase.client.table("webhook_deliveries").insert({"organization_id": org_id, "webhook_id": hook["id"], "event_type": event_type, "payload": body, "status": "pending", "attempts": 0}).execute().data
+        task = asyncio.ensure_future(_deliver_and_record(hook, delivery[0]["id"] if delivery else None, event_id, event_type, raw))
+        _background_tasks.add(task)  # keep a strong reference until finished
+        task.add_done_callback(_background_tasks.discard)
 
 @router.get("/alerts")
 async def list_alerts(status:str|None=None, limit:int=100, user_id:str=Depends(get_current_user)):
@@ -115,11 +143,17 @@ async def list_webhooks(user_id:str=Depends(get_current_user)):
 
 @router.post("/webhooks")
 async def create_webhook(payload:Dict[str,Any],user_id:str=Depends(auth.require_owner_or_admin)):
-    org=await _org(user_id); url=str(payload.get("url") or "").strip();
-    if not url.startswith("https://"): raise HTTPException(400,"Webhook URL must use HTTPS")
-    secret=str(payload.get("secret") or "").strip() or "whsec_"+secrets.token_urlsafe(32); events=payload.get("events") or ["*"]
-    r=supabase.client.table("webhook_integrations").insert({"organization_id":org["id"],"name":str(payload.get("name") or "Security webhook")[:120],"url":url[:1000],"secret_encrypted":_encrypt(secret),"events":events,"is_active":True}).execute()
+    org=await _org(user_id); url=str(payload.get("url") or "").strip()
+    try:
+        await resolve_public_target(url)
+    except UnsafeWebhookURL as exc:
+        raise HTTPException(400, str(exc))
+    events=payload.get("events") or ["*"]
+    if not isinstance(events,list) or not all(isinstance(e,str) and 0<len(e)<=100 for e in events) or len(events)>50: raise HTTPException(400,"events must be an array of event names")
+    secret=str(payload.get("secret") or "").strip() or "whsec_"+secrets.token_urlsafe(32)
+    r=supabase.client.table("webhook_integrations").insert({"organization_id":org["id"],"name":str(payload.get("name") or "Security webhook")[:120],"url":url,"secret_encrypted":_encrypt(secret),"events":events,"is_active":True}).execute()
     if not r.data: raise HTTPException(500,"Unable to create webhook")
+    await record_event(supabase,organization_id=org["id"],actor_user_id=user_id,action="webhook.created",resource_type="webhook",resource_id=r.data[0].get("id"),metadata={"events":events})
     return {"webhook":{k:v for k,v in r.data[0].items() if k!="secret_encrypted"},"secret":secret}
 
 @router.delete("/webhooks/{webhook_id}")

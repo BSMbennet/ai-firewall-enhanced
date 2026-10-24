@@ -124,7 +124,8 @@ installed for the repo) — work is committed locally on branch `production-read
 | 6 | Firewall pipeline & policy engine | IN PROGRESS | F-01, F-02 fixed first; F-18 NOT STARTED |
 | 7 | Usage, budgets, rate limiting | NOT STARTED | F-10, F-15 |
 | 8 | Audit logging, alerts, reporting | NOT STARTED | F-20 |
-| 9 | Enterprise administration & integrations (webhooks, SSO) | NOT STARTED | F-12, F-13 |
+| 9 | Webhooks: SSRF guard, signed + replay-protected, bounded retries off request path | IMPLEMENTED | F-12. 46 tests incl. pinned-transport check. NOT VERIFIED against a real TLS receiver. Gaps: retries are in-process (a restart drops in-flight retries; row stays `pending`); no secret-rotation endpoint yet |
+| 9 | Enterprise SSO (OIDC/SAML) | NOT STARTED | F-13 |
 | 10 | Database integrity & migrations | BLOCKED | F-14 needs the live schema |
 | 11 | Frontend | NOT STARTED | F-24 |
 | 12 | Test suite | IN PROGRESS | 78 backend tests pass (authz, tenant isolation, API keys, gateway, health). Coverage % not yet measured after fixes |
@@ -151,7 +152,8 @@ _Appended as work is verified (command, date, result)._
 | 2026-10-24 #2 | fixes: import `List`; remove duplicate field; replace stale Upstash test with tests of current fail-closed behaviour; correct SCIM expectation (403 path stays covered by `test_suspension_is_effective_even_if_auth_ban_fails`) then `pytest -q` | **78 passed**; `python -m compileall -q app scripts` ok |
 | 2026-10-24 #2 | rewrote `.github/workflows/*.yml` (no `\|\| true`, tests gate deploy, Python from `.python-version`, Node 20, `npm ci`); YAML parsed with PyYAML; `cd frontend && npm ci && npm run build` | all 4 workflows parse; build succeeded (146 packages, 5.0 s). GitHub-hosted execution **not yet observed** |
 
+| 2026-10-24 #3 | new `app/webhook_security.py`; `operations_router` wired to it; `pytest -q` | **124 passed** (46 new webhook tests: 17 unsafe-URL cases, DNS-rebinding/mixed-answer rejection, signature tamper/replay, retry policy, revalidation at delivery, pinned IP/Host/SNI/no-redirect, role + tenant checks, secret never listed/logged, legacy-key decrypt) |
+
 ## 4. Working-tree state (must be committed by the owner)
 
-The `production-readiness` branch has **uncommitted** changes on top of `ff4e1d5` (nothing has been committed or pushed in
-this session). `frontend/package-lock.json` and `.gitignore` are untracked and are required by CI (`npm ci`).
+Work is committed on branch `production-readiness` and pushed to `origin` (first push 2026-10-24, commit `09f9bad`).
