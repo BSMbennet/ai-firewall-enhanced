@@ -23,7 +23,9 @@ from app.enterprise_router import router as enterprise_router
 from app.compliance_router import router as compliance_router
 from app.operations_router import router as operations_router, emit_security_alert, dispatch_webhook_event
 from app.email_service import email_service
+from app.observability import RequestContextMiddleware, configure_logging, current_request_id, enforce_startup_config, validate_environment
 
+configure_logging()
 logger = logging.getLogger("aifirewall.main")
 
 supabase_manager = SupabaseManager()
@@ -38,6 +40,7 @@ metrics = MetricsCollector()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    enforce_startup_config(logger=logger)
     logger.info("Starting AI Firewall")
     await supabase_manager.initialize()
     await upstash_cache.initialize()
@@ -83,7 +86,9 @@ cors_kwargs = {
         "Accept",
         "Origin",
         "X-API-Key",
+        "X-Request-ID",
     ],
+    "expose_headers": ["X-Request-ID"],
 }
 
 # Optional regex support.
@@ -100,6 +105,8 @@ app.add_middleware(
     CORSMiddleware,
     **cors_kwargs,
 )
+# Added last so it is the outermost layer: every response (including CORS pre-flights and errors) carries X-Request-ID.
+app.add_middleware(RequestContextMiddleware)
 
 @app.get("/")
 async def root(): return {"service": "AI Firewall Enterprise API", "status": "online", "docs": "/docs"}
@@ -114,10 +121,11 @@ async def health_check():
 
 @app.get("/ready")
 async def readiness_check():
-    """Readiness for traffic: the database must be reachable. Unready instances return 503."""
-    if not await supabase_manager.health_check():
-        return JSONResponse(status_code=503, content={"status": "not_ready", "version": "3.3.0"})
-    return {"status": "ready", "version": "3.3.0"}
+    """Readiness for traffic. Reports only check names and booleans - never configuration values."""
+    checks = {"database": await supabase_manager.health_check(), "config": validate_environment().ok}
+    if not all(checks.values()):
+        return JSONResponse(status_code=503, content={"status": "not_ready", "version": "3.3.0", "checks": checks})
+    return {"status": "ready", "version": "3.3.0", "checks": checks}
 
 @app.get("/v1/organization")
 async def get_organization(current_user: str = Depends(get_current_user)):
@@ -326,7 +334,7 @@ async def _update_audit(audit_id: str, patch: Dict[str, Any]):
 
 @app.post("/v1/chat/completions")
 async def chat_completions(payload: Dict[str, Any], key_data: Dict = Depends(api_key_manager.verify_api_key_context)):
-    request_id = str(uuid.uuid4())
+    request_id = current_request_id() or str(uuid.uuid4())
     try:
         chat_request = parse_chat_payload(payload)
         enforce_model_policy(chat_request.model, await _load_policies(key_data.get("organization_id")))
@@ -343,7 +351,7 @@ async def chat_completions(payload: Dict[str, Any], key_data: Dict = Depends(api
 @app.post("/v1/secure-ai/query", response_model=SecurityResponse)
 async def secure_query(request: SecurityRequest, current_user: str = Depends(auth_manager.require_ai_user)):
     """Interactive query with a user session. Subject to the same policy, quota and audit controls as the gateway."""
-    request_id = str(uuid.uuid4()); model = request.model.value if hasattr(request.model, "value") else str(request.model)
+    request_id = current_request_id() or str(uuid.uuid4()); model = request.model.value if hasattr(request.model, "value") else str(request.model)
     org = await supabase_manager.get_organization_for_user(current_user)
     if not org: raise HTTPException(status_code=404, detail="Organization not found")
     member = supabase_manager.client.table("organization_members").select("id").eq("organization_id", org["id"]).eq("user_id", current_user).maybe_single().execute().data
@@ -398,8 +406,10 @@ async def http_exception_handler(
         status_code=exc.status_code,
         content={
             "error": exc.detail,
+            "request_id": current_request_id(),
             "timestamp": datetime.utcnow().isoformat(),
         },
+        headers=getattr(exc, "headers", None),
     )
 
 
@@ -419,6 +429,7 @@ async def unhandled_exception_handler(
                 "message": "Internal server error",
                 "type": "internal_error",
             },
+            "request_id": current_request_id(),
             "timestamp": datetime.utcnow().isoformat(),
         },
     )
