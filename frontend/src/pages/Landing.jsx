@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Shield,
@@ -14,12 +14,6 @@ import {
 
 export default function Landing() {
   const [open, setOpen] = useState(false)
-  const [block, setBlock] = useState(48291)
-
-  useEffect(() => {
-    const timer = setInterval(() => setBlock((value) => value + 1), 7000)
-    return () => clearInterval(timer)
-  }, [])
 
   return (
     <div className="min-h-screen bg-[#080d14] text-white overflow-hidden">
@@ -76,7 +70,7 @@ export default function Landing() {
           <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_15%,rgba(0,242,254,.12),transparent_34%)]" />
           <div className="max-w-7xl mx-auto relative text-center">
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/[.06] px-4 py-2 text-[10px] font-mono tracking-wider text-cyan-200">
-              <span className="pulse-dot" /> SECURITY ENCLAVE // BLOCK #{block}
+              <span className="pulse-dot" /> ENTERPRISE AI SECURITY GATEWAY
             </div>
             <h1 className="max-w-5xl mx-auto mt-8 font-[Space_Grotesk] text-5xl md:text-7xl font-bold tracking-[-.055em] leading-[.98]">
               Secure every AI request.<br />
@@ -97,14 +91,14 @@ export default function Landing() {
                 <span className="w-2 h-2 rounded-full bg-rose-400/70" />
                 <span className="w-2 h-2 rounded-full bg-amber-300/70" />
                 <span className="w-2 h-2 rounded-full bg-emerald-400/70" />
-                <span className="ml-3 text-[10px] font-mono text-slate-500">AI FIREWALL // LIVE COMMAND CENTER</span>
+                <span className="ml-3 text-[10px] font-mono text-slate-500">AI FIREWALL // ILLUSTRATIVE PREVIEW (SAMPLE DATA, NOT LIVE)</span>
               </div>
               <div className="grid md:grid-cols-4 gap-3 p-4">
                 {[
-                  ['2.4M', 'AI REQUESTS'],
-                  ['47.3K', 'THREATS BLOCKED'],
-                  ['23.4', 'AVG RISK SCORE'],
-                  ['99.97%', 'UPTIME'],
+                  ['—', 'AI REQUESTS'],
+                  ['—', 'THREATS BLOCKED'],
+                  ['—', 'AVG RISK SCORE'],
+                  ['—', 'AVG LATENCY'],
                 ].map(([value, label]) => (
                   <div className="rounded-xl border border-white/[.07] bg-white/[.025] p-4" key={label}>
                     <div className="text-2xl font-bold font-[Space_Grotesk]">{value}</div>
@@ -113,10 +107,10 @@ export default function Landing() {
                 ))}
               </div>
               <div className="mx-4 mb-4 rounded-xl border border-cyan-300/10 bg-cyan-300/[.03] p-4 font-mono text-xs">
-                <span className="text-slate-500">08:42:18</span>
+                <span className="text-slate-500">example</span>
                 <span className="text-rose-300 ml-4">BLOCK</span>
                 <span className="ml-4 text-slate-300">Prompt injection attempt intercepted</span>
-                <span className="float-right text-cyan-300">RISK 96.4</span>
+                <span className="float-right text-cyan-300">RISK —</span>
               </div>
             </div>
           </div>
@@ -130,8 +124,8 @@ export default function Landing() {
             </h2>
             <div className="grid md:grid-cols-3 gap-5 mt-12">
               {[
-                [Shield, 'THREAT DEFENSE', 'Detect and block prompt injection, jailbreaks, data leakage and malicious AI activity before it reaches the model.'],
-                [Network, 'UNIFIED GATEWAY', 'One secure API endpoint for OpenAI, Anthropic and other AI providers—with centralized policy enforcement.'],
+                [Shield, 'THREAT DEFENSE', 'Rule-based detection of common prompt-injection patterns, personal data and credentials before a request is forwarded. Detection is not exhaustive.'],
+                [Network, 'UNIFIED GATEWAY', 'One API endpoint for OpenAI and Anthropic models, with organisation-level policy, rate limits and audit logging.'],
                 [Eye, 'FULL VISIBILITY', 'Track every employee, application, request, risk score and security decision from one command center.'],
               ].map(([Icon, title, description]) => (
                 <div className="af-card af-card-pad" key={title}>

@@ -1,27 +1,97 @@
-import React,{useEffect,useState,useCallback}from 'react'
-import {Terminal,ScrollText,FileText,ShieldCheck,Activity,AlertTriangle,BrainCircuit,WalletCards,ArrowUpRight,CheckCircle2,Eye} from 'lucide-react'
+import React, { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Activity, AlertTriangle, CheckCircle2, Clock, Eye, ShieldCheck, Users, Layers3, RefreshCw } from 'lucide-react'
 import api from '../services/api'
-import {useAuth} from '../contexts/AuthContext'
-const fmt=n=>n>=1000000?(n/1000000).toFixed(1)+'M':n>=1000?(n/1000).toFixed(1)+'K':String(n||0)
-export default function Dashboard(){
- const{user}=useAuth(),[stats,setStats]=useState({}),[events,setEvents]=useState([]),[loading,setLoading]=useState(true),[batch,setBatch]=useState(123)
- const load=useCallback(async()=>{if(!user)return;setLoading(true);const r=await Promise.allSettled([api.get('/dashboard/stats'),api.get('/dashboard/recent-requests?limit=12')]);if(r[0].status==='fulfilled')setStats(r[0].value.data||{});if(r[1].status==='fulfilled')setEvents(r[1].value.data?.requests||[]);setLoading(false)},[user])
- useEffect(()=>{load();const t=setInterval(()=>setBatch(v=>v+1),14000);return()=>clearInterval(t)},[load])
- const metrics=[
-  ['TOTAL REQUESTS',fmt(stats.total_requests||0),Activity,'+12.8% DAILY ACCRUAL'],
-  ['BLOCKED THREATS',fmt(stats.blocked_requests||0),AlertTriangle,Number(stats.threat_rate||0).toFixed(1)+'% THREAT RATE'],
-  ['AVERAGE RISK SCORE',Number(stats.avg_risk_score||23.4).toFixed(1),BrainCircuit,'LOW EXPOSURE BAND'],
-  ['MONTHLY COST SAVED','$'+fmt(stats.cost_saved||48200),WalletCards,'+18.4% VS LAST MONTH']
- ]
- return <div className="af-page">
-  <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between"><div><div className="af-eyebrow">COMMAND CENTER / PRODUCTION</div><h1 className="af-title">Security Command Center</h1><p className="af-subtitle">Real-time AI traffic protection, policy enforcement and threat intelligence.</p></div><div className="flex gap-2"><button className="af-btn"><Terminal size={15} className="inline mr-2"/>Analyze Prompt</button><button className="af-btn"><ScrollText size={15} className="inline mr-2"/>View Logs</button><button className="af-btn af-btn-primary"><FileText size={15} className="inline mr-2"/>Generate Report</button></div></div>
-  <section className="grid grid-flow-col auto-cols-[minmax(240px,1fr)] lg:grid-flow-row lg:grid-cols-4 gap-4 overflow-x-auto snap-x pb-2 mb-6">{metrics.map(([label,val,Icon,sub],i)=><div className="af-card af-card-pad min-w-[240px] snap-start" key={label}><div className="flex justify-between"><div className="af-label">{label}</div><Icon size={18} className="text-cyan-300"/></div><div className="af-value">{val}</div>{i===0&&<svg viewBox="0 0 160 38" className="w-full h-10 mt-3"><path d="M0 32 L15 26 L30 29 L45 17 L60 23 L75 14 L90 20 L105 8 L120 14 L135 4 L160 10" fill="none" stroke="#00f2fe" strokeWidth="2"/><path d="M0 38 L0 32 L15 26 L30 29 L45 17 L60 23 L75 14 L90 20 L105 8 L120 14 L135 4 L160 10 L160 38Z" fill="rgba(0,242,254,.08)"/></svg>}{i===2&&<div className="h-1.5 rounded-full bg-slate-800 mt-5"><div className="h-full rounded-full bg-cyan-400" style={{width:'23.4%'}}/></div>}<div className="af-muted mt-3">{sub}</div></div>)}</section>
-  <section className="af-card af-card-pad mb-6"><div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between"><div><div className="af-label">Security Pipeline Orchestrator</div><div className="flex flex-wrap gap-2 mt-4">{['INGEST','VALIDATE','SCORE','FILTER','RESPOND'].map((s,i)=><React.Fragment key={s}><span className={'rounded-full px-3 py-2 text-[10px] font-mono tracking-wider '+(i<4?'bg-cyan-400/10 text-cyan-200 border border-cyan-400/20':'bg-slate-800 text-slate-400')}>{s}</span>{i<4&&<span className="text-slate-600 self-center">→</span>}</React.Fragment>)}</div></div><div className="rounded-xl border border-cyan-400/15 bg-cyan-400/5 p-4 min-w-[260px]"><div className="text-cyan-200 text-sm"><span className="pulse-dot inline-block mr-2"/>Batch #{batch}: Processing request</div><div className="af-muted mt-1">Pipeline ETA 8s · Node health 100%</div></div></div></section>
-  <section className="mb-6"><div className="af-label mb-3">Security Vaults</div><div className="grid gap-4 md:grid-cols-3">{[
-   ['Prompt Injection Shield','99.7%','47,382 blocked','ACTIVE',ShieldCheck],
-   ['PII Redaction Engine','18.4K','GDPR / CCPA compliant','ENFORCED',Eye],
-   ['Semantic Analysis','97.9%','Context isolation success','OPTIMAL',BrainCircuit]
-  ].map(([n,v,d,s,I])=><div className="af-card af-card-pad" key={n}><div className="flex justify-between"><I className="text-cyan-300" size={20}/><span className="text-[10px] font-mono text-emerald-300">● {s}</span></div><h3 className="font-semibold text-lg mt-7">{n}</h3><div className="af-value text-2xl">{v}</div><div className="af-muted mt-1">{d}</div><button className="af-btn mt-5 w-full">Inspect Policy <ArrowUpRight size={14} className="inline float-right"/></button></div>)}</div></section>
-  <section className="af-card overflow-hidden"><div className="af-card-pad flex items-center justify-between border-b border-slate-800"><div><div className="af-label">Live Security Event Stream</div><div className="af-muted mt-1">{loading?'Synchronizing enclave telemetry…':'Streaming latest gateway decisions'}</div></div><button onClick={load} className="af-btn">Refresh</button></div><div className="overflow-x-auto"><table className="w-full text-sm min-w-[700px]"><thead className="text-left bg-slate-950/40"><tr>{['TIMESTAMP','EVENT','USER / APPLICATION','RISK','MODEL','STATUS'].map(x=><th className="px-5 py-3 af-label" key={x}>{x}</th>)}</tr></thead><tbody>{(events.length?events:[{id:1,timestamp:new Date().toISOString(),action:'ALLOW',risk_score:12,model:'gpt-4o-mini',user:'customer-support'},{id:2,timestamp:new Date(Date.now()-42000).toISOString(),action:'BLOCK',risk_score:94,model:'gpt-4o',user:'hr-assistant'},{id:3,timestamp:new Date(Date.now()-92000).toISOString(),action:'REVIEW',risk_score:67,model:'claude',user:'research-bot'}]).map(e=><tr className="border-t border-slate-800/70 hover:bg-cyan-400/[.025]" key={e.id}><td className="px-5 py-4 font-mono text-xs text-slate-400">{new Date(e.timestamp).toLocaleTimeString()}</td><td className="px-5 py-4"><span className={e.action==='BLOCK'?'text-rose-300':e.action==='REVIEW'?'text-amber-300':'text-emerald-300'}>{e.action}</span></td><td className="px-5 py-4">{e.user||e.application_name||'gateway-user'}</td><td className="px-5 py-4">{Number(e.risk_score||0).toFixed(1)}</td><td className="px-5 py-4 text-slate-400">{e.model||'gpt-4o-mini'}</td><td className="px-5 py-4">{e.action==='ALLOW'?<CheckCircle2 size={16} className="text-emerald-400"/>:<AlertTriangle size={16} className="text-amber-400"/>}</td></tr>)}</tbody></table></div></section>
- </div>
+import { useAuth } from '../contexts/AuthContext'
+
+const AUDIT_ROLES = ['owner', 'admin', 'security']
+const fmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(n || 0))
+const flag = (policies, key) => (policies.length ? policies.some((p) => p[key] !== false) : true)
+
+// Everything on this page comes from the API. Failed or empty sources are shown as such - never replaced by sample data.
+export default function Dashboard() {
+  const { user, role } = useAuth()
+  const [stats, setStats] = useState(null)
+  const [events, setEvents] = useState([])
+  const [policies, setPolicies] = useState([])
+  const [errors, setErrors] = useState({})
+  const [loading, setLoading] = useState(true)
+  const canSeeEvents = AUDIT_ROLES.includes(role)
+
+  const load = useCallback(async () => {
+    if (!user) return
+    setLoading(true)
+    const [s, e, p] = await Promise.allSettled([
+      api.get('/dashboard/stats'),
+      canSeeEvents ? api.get('/dashboard/recent-requests?limit=12') : Promise.resolve(null),
+      api.get('/organization/policies'),
+    ])
+    const next = {}
+    if (s.status === 'fulfilled') setStats(s.value.data); else next.stats = 'Statistics could not be loaded.'
+    if (e.status === 'fulfilled') setEvents(e.value?.data?.requests || []); else next.events = 'Recent decisions could not be loaded.'
+    if (p.status === 'fulfilled') setPolicies(p.value.data?.policies || []); else next.policies = 'Policy status could not be loaded.'
+    setErrors(next)
+    setLoading(false)
+  }, [user, canSeeEvents])
+  useEffect(() => { load() }, [load])
+
+  const metrics = stats && [
+    ['TOTAL REQUESTS', fmt(stats.total_requests), Activity, 'All gateway requests recorded'],
+    ['BLOCKED REQUESTS', fmt(stats.blocked_requests), AlertTriangle, `${Number(stats.threat_rate || 0).toFixed(1)}% of requests`],
+    ['AVG LATENCY', `${Math.round(stats.avg_latency_ms || 0)} ms`, Clock, 'Gateway + provider time'],
+    ['APPLICATIONS', fmt(stats.applications), Layers3, 'Registered AI applications'],
+    ['ACTIVE EMPLOYEES', fmt(stats.employees), Users, 'Non-removed organisation members'],
+  ]
+  const protections = [
+    ['Prompt injection detection', 'prompt_injection_protection', ShieldCheck],
+    ['PII detection & redaction', 'pii_protection', Eye],
+    ['Response filtering', 'sensitive_content_protection', ShieldCheck],
+  ]
+
+  return <div className="af-page">
+    <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+      <div><div className="af-eyebrow">COMMAND CENTER</div><h1 className="af-title">Security Command Center</h1>
+        <p className="af-subtitle">Gateway activity and policy status for your organisation.</p></div>
+      <div className="flex gap-2">
+        {canSeeEvents && <Link to="/enterprise-operations" className="af-btn">Logs &amp; analytics</Link>}
+        <Link to="/compliance" className="af-btn af-btn-primary">Compliance &amp; audit export</Link>
+        <button onClick={load} className="af-btn" aria-label="Refresh"><RefreshCw size={15} className={loading ? 'animate-spin' : ''} /></button>
+      </div>
+    </div>
+
+    {errors.stats && <p role="alert" className="mt-4 text-sm text-amber-300">{errors.stats}</p>}
+    <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 my-6">
+      {(metrics || Array(5).fill(null)).map((m, i) => m
+        ? <div className="af-card af-card-pad" key={m[0]}><div className="flex justify-between"><div className="af-label">{m[0]}</div>{React.createElement(m[2], { size: 18, className: 'text-cyan-300' })}</div><div className="af-value">{m[1]}</div><div className="af-muted mt-3">{m[3]}</div></div>
+        : <div className="af-card af-card-pad" key={i}><div className="af-label">{loading ? 'LOADING…' : 'UNAVAILABLE'}</div><div className="af-value">—</div></div>)}
+    </section>
+
+    <section className="mb-6">
+      <div className="af-label mb-3">Active protections (from your organisation's policies)</div>
+      {errors.policies && <p role="alert" className="mb-2 text-sm text-amber-300">{errors.policies}</p>}
+      <div className="grid gap-4 md:grid-cols-3">{protections.map(([name, key, Icon]) => {
+        const unknown = Boolean(errors.policies)
+        const on = flag(policies, key)
+        return <div className="af-card af-card-pad" key={key}><div className="flex justify-between"><Icon className="text-cyan-300" size={20} /><span className={'text-[10px] font-mono ' + (unknown ? 'text-slate-400' : on ? 'text-emerald-300' : 'text-amber-300')}>● {unknown ? 'UNKNOWN' : on ? 'ENABLED' : 'DISABLED'}</span></div><h3 className="font-semibold text-lg mt-5">{name}</h3>
+          <div className="af-muted mt-1">Rule-based; not exhaustive. See known limitations.</div>
+          {AUDIT_ROLES.includes(role) && <Link to="/organization" className="af-btn mt-4 w-full inline-block text-center">Manage policy</Link>}</div>
+      })}</div>
+    </section>
+
+    <section className="af-card overflow-hidden">
+      <div className="af-card-pad border-b border-slate-800"><div className="af-label">Recent gateway decisions</div>
+        <div className="af-muted mt-1">{canSeeEvents ? (loading ? 'Loading…' : 'Latest requests recorded by the gateway') : 'Request-level activity is visible to owner, admin and security roles.'}</div></div>
+      {errors.events && <p role="alert" className="px-5 py-3 text-sm text-amber-300">{errors.events}</p>}
+      {canSeeEvents && !errors.events && <div className="overflow-x-auto">
+        {events.length === 0 && !loading ? <p className="px-5 py-8 text-sm text-slate-400">No requests have been recorded yet. Send one through the gateway with an API key to see it here.</p>
+          : <table className="w-full text-sm min-w-[700px]"><thead className="text-left bg-slate-950/40"><tr>{['TIME', 'DECISION', 'RISK', 'MODEL', 'REASON'].map((x) => <th className="px-5 py-3 af-label" key={x}>{x}</th>)}</tr></thead>
+            <tbody>{events.map((e) => <tr className="border-t border-slate-800/70" key={e.id}>
+              <td className="px-5 py-4 font-mono text-xs text-slate-400">{e.timestamp ? new Date(e.timestamp).toLocaleString() : '—'}</td>
+              <td className="px-5 py-4"><span className={e.action === 'BLOCK' ? 'text-rose-300' : e.action === 'REVIEW' ? 'text-amber-300' : 'text-emerald-300'}>{e.action === 'ALLOW' ? <CheckCircle2 size={14} className="inline mr-1" /> : <AlertTriangle size={14} className="inline mr-1" />}{e.action}</span></td>
+              <td className="px-5 py-4">{e.risk_score == null ? '—' : Number(e.risk_score).toFixed(1)}</td>
+              <td className="px-5 py-4 text-slate-400">{e.model || '—'}</td>
+              <td className="px-5 py-4 text-slate-400">{e.reason || '—'}</td></tr>)}</tbody></table>}
+      </div>}
+    </section>
+  </div>
 }

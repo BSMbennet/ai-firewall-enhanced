@@ -132,7 +132,7 @@ installed for the repo) — work is committed locally on branch `production-read
 | 9 | Webhooks: SSRF guard, signed + replay-protected, bounded retries off request path | IMPLEMENTED | F-12. 46 tests incl. pinned-transport check. NOT VERIFIED against a real TLS receiver. Gaps: retries are in-process (a restart drops in-flight retries; row stays `pending`); no secret-rotation endpoint yet |
 | 9 | Enterprise SSO (OIDC/SAML) | NOT STARTED | F-13 |
 | 10 | Database integrity & migrations | BLOCKED | F-14 needs the live schema |
-| 11 | Frontend | NOT STARTED | F-24 |
+| 11 | Frontend | IN PROGRESS | F-24 partly: dead CRA code removed; **Tailwind was never installed** (`@tailwind` + utility classes, 5 KB CSS) so most styling was missing - now installed (CSS 26 KB), landing and dashboard checked in headless Chromium against mocked API responses (ok/empty/failed). Fabricated metrics removed (landing 2.4M/99.97% uptime, dashboard $48,200/sample events/fake vault stats/fake block counters); dashboard shows only API data with explicit unavailable/empty states. NOT done: other pages not visually reviewed, pricing in Settings is hard-coded ($29/$79), no frontend tests, Supabase URL/publishable-key fallback still hard-coded in `lib/supabase.js`, accessibility not audited, not verified on the deployed Vercel site |
 | 12 | Test suite | IN PROGRESS | 78 backend tests pass (authz, tenant isolation, API keys, gateway, health). Coverage % not yet measured after fixes |
 | 13 | CI/CD & deployment | IN PROGRESS | B1, B2, B4, B5, B6, B9 resolved and verified locally (see evidence 2026-10-24 #2); workflows not yet run on GitHub; no staging env |
 | 14 | Performance & resilience | NOT STARTED | |
@@ -170,6 +170,7 @@ _Appended as work is verified (command, date, result)._
 | 2026-10-25 #7 | new `app/policy.py`, rewritten `app/llm_router.py`, `gateway.py`/`orchestrator.py`/`main.py` wiring; `REQUIRE_REDIS=1 pytest -q` | new `test_llm_router.py` (MockTransport + fake OpenAI client) and `test_policy.py`: **442 passed, 1 xfailed** (F-27). No real provider call was made |
 | 2026-10-25 #8 | `app/audit.py` hash chain; `pytest -q` | 2 new tests (link, edit/delete/reorder detected, per-org chains): **444 passed, 1 xfailed** |
 | 2026-10-25 #9 | verify endpoint + SCIM events; docs ARCHITECTURE, THREAT_MODEL, API, DEPLOYMENT, INCIDENT_RESPONSE, RELEASE_CHECKLIST, CHANGELOG written; `pytest -q` | **446 passed, 1 xfailed**. Docs describe the code as read; DEPLOYMENT/INCIDENT procedures are proposals, never exercised |
+| 2026-10-25 #10 | frontend: add tailwindcss 3.4.17/postcss/autoprefixer + configs; rewrite `Dashboard.jsx`; remove fake telemetry from `AppShell`/`Landing`; delete unused `store/`, `index.js`, `services/supabase.js`, 3 legacy components; `npm run build`; Playwright screenshots | build OK (CSS 5.2 KB -> 26.3 KB); landing/dashboard render; failed API shows 'UNAVAILABLE', empty shows guidance; no page errors. `npm audit` reports vulnerabilities (not yet triaged, B7) |
 
 ## 4. Working-tree state (must be committed by the owner)
 
