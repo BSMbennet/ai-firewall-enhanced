@@ -1,8 +1,10 @@
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import re
 import asyncio
+
+from app import detection
 
 logger = logging.getLogger("aifirewall.orchestrator")
 
@@ -20,29 +22,14 @@ class SecurityResult:
     reason: str
     pii_detected: bool = False
     pii_redacted: bool = False
+    detections: List[str] = field(default_factory=list)  # rule ids / PII categories only - never matched content
 
 class SecurityOrchestrator:
     """Central decision engine for security policies"""
 
     def __init__(self):
-        self.injection_patterns = [
-            r"(?i)ignore previous instructions",
-            r"(?i)you are now (dan|developer mode)",
-            r"(?i)system prompt:|system message:",
-            r"(?i)pretend you are (evil|unrestricted|uncensored)",
-            r"(?i)forget (all|previous) (instructions|rules)",
-            r"(?i)output (sensitive|confidential|secret)",
-            r"(?i)(base64|hex|rot13).*decode",
-            r"(?i)show me (how|steps) to (hack|exploit)",
-        ]
-        
-        self.pii_patterns = {
-            "EMAIL": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-            "PHONE": r'\+\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',
-            "SSN": r'\d{3}-\d{2}-\d{4}',
-            "API_KEY": r'(?i)(api[_-]?key|apikey|token)[\s]*[:=][\s]*[\'"]?([a-zA-Z0-9_\-]{20,50})',
-            "JWT": r'eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}'
-        }
+        # Rules and detectors live in app/detection.py (deterministic, unit-testable, evaluated in tests/eval).
+        pass
 
     async def validate_request_parallel(self, prompt: str, context: Dict = None, user_id: str = None, request_id: str = None) -> SecurityResult:
         """Run all security checks in parallel"""
@@ -52,9 +39,10 @@ class SecurityOrchestrator:
             self._check_injection(prompt),
             self._check_pii(prompt),
             self._check_semantic(prompt),
-            self._check_context(prompt, context)
+            self._check_context(prompt, context),
+            self._check_blocking_secrets(prompt),
         ]
-        
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Fail closed: a crashed check must never be interpreted as "nothing found".
@@ -69,7 +57,9 @@ class SecurityOrchestrator:
         pii_score, pii_detected = results[1]
         semantic_score = results[2]
         context_score = results[3]
-        
+        blocking_secrets = results[4]
+        detections = sorted({d for d in (injection_reason.split(" ")[-1:] if injection_score else [])} | set(blocking_secrets))
+
         # Calculate risk score
         risk_score = (
             injection_score * 0.5 +
@@ -77,67 +67,54 @@ class SecurityOrchestrator:
             semantic_score * 0.1 +
             context_score * 0.1
         ) * 100
-        
-        # Decision logic
-        if injection_score > 0.8:
-            return SecurityResult(
-                decision="BLOCK",
-                risk_score=risk_score,
-                reason=f"Prompt injection detected: {injection_reason}",
-                pii_detected=pii_detected
-            )
-        
+
+        # Decision logic (most severe first)
+        if injection_score >= 0.8:
+            return SecurityResult(decision="BLOCK", risk_score=risk_score, pii_detected=pii_detected, detections=detections,
+                                  reason=f"Prompt injection detected: {injection_reason}")
+
+        if blocking_secrets:
+            return SecurityResult(decision="BLOCK", risk_score=max(risk_score, 80.0), pii_detected=pii_detected, detections=detections,
+                                  reason=f"Credential material must not be sent to an AI provider: {', '.join(sorted(blocking_secrets))}")
+
         if risk_score > 70:
-            return SecurityResult(
-                decision="BLOCK",
-                risk_score=risk_score,
-                reason=f"High risk score: {risk_score:.0f}",
-                pii_detected=pii_detected
-            )
-        
-        if risk_score > 40:
-            return SecurityResult(
-                decision="REVIEW",
-                risk_score=risk_score,
-                reason=f"Medium risk requires review",
-                pii_detected=pii_detected
-            )
-        
-        return SecurityResult(
-            decision="ALLOW",
-            risk_score=risk_score,
-            reason="Request passed security checks",
-            pii_detected=pii_detected
-        )
+            return SecurityResult(decision="BLOCK", risk_score=risk_score, pii_detected=pii_detected, detections=detections,
+                                  reason=f"High risk score: {risk_score:.0f}")
+
+        if injection_score >= 0.5 or risk_score > 40:
+            return SecurityResult(decision="REVIEW", risk_score=max(risk_score, 41.0), pii_detected=pii_detected, detections=detections,
+                                  reason=f"Medium risk requires review: {injection_reason}" if injection_score >= 0.5 else "Medium risk requires review")
+
+        return SecurityResult(decision="ALLOW", risk_score=risk_score, pii_detected=pii_detected, detections=detections,
+                              reason="Request passed security checks")
 
     async def _check_injection(self, prompt: str) -> tuple:
-        """Check for prompt injection"""
-        for pattern in self.injection_patterns:
-            if re.search(pattern, prompt):
-                return (0.95, f"Detected pattern: {pattern}")
-        
-        # Check for unusual length or special characters
+        """Check for prompt injection. Returns (score 0-1, reason); the reason names a rule id, never the matched text."""
+        findings = detection.find_injection(prompt)
+        if findings:
+            return (detection.injection_score(findings), f"{findings[0].category} {findings[0].rule_id}")
+
+        # Weak structural signals (cannot block on their own)
         if len(prompt) > 2000:
             return (0.3, "Unusually long prompt")
-        
-        special_char_ratio = len([c for c in prompt if not c.isalnum() and not c.isspace()]) / len(prompt)
+
+        special_char_ratio = len([c for c in prompt if not c.isalnum() and not c.isspace()]) / len(prompt) if prompt else 0
         if special_char_ratio > 0.3:
             return (0.4, "High special character ratio")
-        
+
         return (0, "No injection detected")
 
     async def _check_pii(self, prompt: str) -> tuple:
-        """Check for PII"""
-        detected = False
-        score = 0
-        
-        for pattern_name, pattern in self.pii_patterns.items():
-            matches = re.finditer(pattern, prompt, re.IGNORECASE)
-            if any(matches):
-                detected = True
-                score += 0.3
-        
-        return (min(score, 1.0), detected)
+        """Check for PII / secrets. Returns (score 0-1, detected)."""
+        categories = detection.pii_categories(prompt)
+        return (min(0.3 * len(categories), 1.0), bool(categories))
+
+    async def pii_categories(self, prompt: str) -> set:
+        """Categories only (never the values); used by the evaluation harness and audit metadata."""
+        return detection.pii_categories(prompt)
+
+    async def _check_blocking_secrets(self, prompt: str) -> set:
+        return detection.pii_categories(prompt) & detection.BLOCKING_PII_CATEGORIES
 
     async def _check_semantic(self, prompt: str) -> float:
         """Semantic analysis (placeholder for ML model)"""
@@ -172,11 +149,7 @@ class SecurityOrchestrator:
         if not redact_pii:
             return prompt
         
-        sanitized = prompt
-        for pattern_name, pattern in self.pii_patterns.items():
-            sanitized = re.sub(pattern, f"[REDACTED_{pattern_name}]", sanitized, flags=re.IGNORECASE)
-        
-        return sanitized
+        return detection.redact(prompt)
 
     async def apply_prompt_guard(self, prompt: str, context: Dict = None) -> str:
         """Apply safety prefixes to prompt"""
@@ -193,8 +166,7 @@ class SecurityOrchestrator:
         
         # Check for data leakage
         if prevent_data_leakage:
-            for pattern_name, pattern in self.pii_patterns.items():
-                content = re.sub(pattern, f"[REDACTED_{pattern_name}]", content, flags=re.IGNORECASE)
+            content = detection.redact(content)
         
         # Check for harmful content
         if block_harmful_content:

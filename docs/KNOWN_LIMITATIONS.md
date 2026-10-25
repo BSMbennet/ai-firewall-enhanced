@@ -13,9 +13,16 @@ high-risk enterprise or government deployment.
 - GitHub-hosted CI has not yet been observed running the rewritten workflows.
 
 ## Security gaps
-- **Prompt-injection detection is weak (F-18, F-26).** Regex rules only; `Ignore all previous instructions...` is
-  allowed (strict xfail in `tests/test_detection_gaps.py`). No evaluation dataset. No South African ID/phone/card
-  detection. Do not describe the firewall as comprehensive.
+- **Prompt-injection detection is rule-based and incomplete (F-18, F-27).** Measured in `docs/DETECTION_EVALUATION.md`:
+  85.7% on the author-written tuning set but **35% on the first blind held-out set** (n=20). Not detected: other
+  languages (Spanish/French/Afrikaans overrides are allowed), encodings, leetspeak, paraphrases, role-play framing,
+  indirect injection from retrieved documents. No ML signal and no human-reviewed real-traffic evaluation. Known false
+  positives exist (held requests such as "disable the content filter in Chrome"). Do not describe the firewall as
+  comprehensive or as preventing prompt injection.
+- PII coverage: SA ID numbers, SA/international phones, cards, emails, common key shapes, JWTs, passwords and private keys.
+  Not covered: passport numbers, bank accounts, names, addresses, health data, digit-by-digit spaced identifiers.
+- The prompt "guard" still concatenates trusted text and user text into one user turn; trusted/untrusted message
+  separation (F-19) is not implemented, and non-user messages (system/assistant/tool) are still dropped.
 - **No limiting of unauthenticated traffic.** Invalid-API-key floods are not throttled per client IP, because trustworthy
   client-IP extraction depends on the proxy topology (Render/Vercel) that has not been confirmed.
 - No token-based quotas or cost budgets; only request-count limits. Fixed-window counting allows up to 2x the limit
