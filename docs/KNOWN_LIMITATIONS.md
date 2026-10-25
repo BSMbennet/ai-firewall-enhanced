@@ -21,14 +21,18 @@ high-risk enterprise or government deployment.
   comprehensive or as preventing prompt injection.
 - PII coverage: SA ID numbers, SA/international phones, cards, emails, common key shapes, JWTs, passwords and private keys.
   Not covered: passport numbers, bank accounts, names, addresses, health data, digit-by-digit spaced identifiers.
-- The prompt "guard" still concatenates trusted text and user text into one user turn; trusted/untrusted message
-  separation (F-19) is not implemented, and non-user messages (system/assistant/tool) are still dropped.
+- Trusted/untrusted separation: the security rules are a separate first system message and roles are preserved; this
+  reduces but does not eliminate injection risk (the model may still follow untrusted text). Only text content is
+  supported; tool/function messages and images are rejected.
 - **No limiting of unauthenticated traffic.** Invalid-API-key floods are not throttled per client IP, because trustworthy
   client-IP extraction depends on the proxy topology (Render/Vercel) that has not been confirmed.
 - No token-based quotas or cost budgets; only request-count limits. Fixed-window counting allows up to 2x the limit
   across a window boundary.
 - Enterprise SSO (OIDC/SAML) is not functional (F-13): identity-connection secrets are stored hashed.
-- Audit log is mutable service-role data without a hash chain (F-20); admin-action audit writes are best-effort.
+- Audit: `audit_events` carry a per-organisation hash chain (`GET /v1/audit/verify`), which is tamper-*evident* only: a
+  service-role holder can re-hash it, concurrent writes can fork it, the head is not anchored outside the database, and the
+  gateway request log (`audit_logs`) is not chained. Admin-action audit writes are best-effort. Failed API-key
+  authentications are logged, not stored (unauthenticated callers must not be able to grow tables).
 - Webhook retries run in-process: a restart loses in-flight retries (the delivery row stays `pending`). No secret
   rotation endpoint. The SSRF guard cannot stop a public host the customer controls from receiving event data.
 - Streaming responses are not supported by the gateway, so output filtering before release is whole-response only.
@@ -37,5 +41,5 @@ high-risk enterprise or government deployment.
 - About 25 `print()` calls in legacy modules still bypass the redacting JSON logger.
 - Render free plan (cold starts, no SLA); no staging environment; no backup-restore drill; no load testing.
 - Synchronous Supabase client calls inside async handlers limit throughput (F-21).
-- Cost figures are not reliable (F-16): provider pricing is hard-coded.
+- Cost is not computed (F-16): fabricated prices were removed; there is no dated price table yet, so cost is recorded as 0.
 - Dependencies have known vulnerabilities (B7); upgrades are pending.

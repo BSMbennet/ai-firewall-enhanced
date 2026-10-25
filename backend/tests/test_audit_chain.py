@@ -27,3 +27,22 @@ def test_chains_are_per_organisation(client, db):
     asyncio.run(record_event(mgr, organization_id="o1", actor_user_id="u", action="x", resource_type="t"))
     asyncio.run(record_event(mgr, organization_id="o2", actor_user_id="u", action="y", resource_type="t"))
     assert rows_for(db, "o2")[0]["metadata"]["chain"]["prev"] == GENESIS
+
+
+def test_verify_endpoint_roles_and_tamper_detection(client, db, world):
+    from tests.conftest import make_key
+    make_key(client, db, world["owner"], name="k")
+    ok = client.get("/v1/audit/verify", headers=db.token(world["owner"]))
+    assert ok.status_code == 200 and ok.json()["ok"] is True and ok.json()["checked"] >= 1
+    for role in ("developer", "member"):
+        assert client.get("/v1/audit/verify", headers=db.token(world[role])).status_code == 403
+    db.rows("audit_events", organization_id=world["org_a"])[0]["outcome"] = "denied"
+    assert client.get("/v1/audit/verify", headers=db.token(world["security"])).json()["ok"] is False
+
+
+def test_scim_token_lifecycle_is_audited(client, db, world):
+    r = client.post("/v1/enterprise/scim/tokens", json={}, headers=db.token(world["owner"]))
+    assert r.status_code == 200, r.text
+    client.delete(f"/v1/enterprise/scim/tokens/{r.json()['token_id']}", headers=db.token(world["owner"]))
+    actions = {e["action"] for e in db.rows("audit_events", organization_id=world["org_a"])}
+    assert {"scim_token.created", "scim_token.revoked"} <= actions

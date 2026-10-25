@@ -64,6 +64,7 @@ async def update_identity_connection(connection_id:str,payload:Dict[str,Any],use
 async def create_scim_token(payload:Dict[str,Any]|None=None,user_id:str=Depends(auth.require_owner_or_admin)):
     org=await _org(user_id); payload=payload or {}; token="scim_"+secrets.token_urlsafe(36); days=max(1,min(int(payload.get("expires_days") or 365),3650)); r=supabase.client.table("scim_tokens").insert({"organization_id":org["id"],"name":str(payload.get("name") or "SCIM token")[:120],"token_hash":_hash(token),"expires_at":(datetime.now(timezone.utc)+timedelta(days=days)).isoformat(),"created_by":user_id}).execute()
     if not r.data: raise HTTPException(500,"Unable to create SCIM token")
+    await record_event(supabase, organization_id=org["id"], actor_user_id=user_id, action="scim_token.created", resource_type="scim_token", resource_id=r.data[0]["id"], metadata={"expires_at": r.data[0]["expires_at"]})
     return {"token":token,"token_id":r.data[0]["id"],"expires_at":r.data[0]["expires_at"]}
 @router.get("/scim/tokens")
 async def list_scim_tokens(user_id:str=Depends(auth.require_owner_or_admin)):
@@ -72,6 +73,7 @@ async def list_scim_tokens(user_id:str=Depends(auth.require_owner_or_admin)):
 async def revoke_scim_token(token_id:str,user_id:str=Depends(auth.require_owner_or_admin)):
     org=await _org(user_id); r=supabase.client.table("scim_tokens").update({"revoked_at":datetime.now(timezone.utc).isoformat()}).eq("id",token_id).eq("organization_id",org["id"]).execute()
     if not r.data: raise HTTPException(404,"SCIM token not found")
+    await record_event(supabase, organization_id=org["id"], actor_user_id=user_id, action="scim_token.revoked", resource_type="scim_token", resource_id=token_id)
     return {"message":"SCIM token revoked"}
 
 async def _scim_org(credentials:HTTPAuthorizationCredentials|None)->Dict:

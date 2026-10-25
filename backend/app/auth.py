@@ -489,6 +489,9 @@ class APIKeyManager:
             raise unauthorized("Missing API key")
         key_data = await self.supabase.verify_api_key(api_key)
         if not key_data:
+            # Logged, not written to the database: the caller is unauthenticated, so a DB write per attempt would let
+            # anyone grow the audit tables. The key value itself is never logged.
+            logger.warning("api_key_auth_failed reason=invalid_or_expired")
             raise unauthorized("Invalid or expired API key")
         self.validate_key_status(key_data)
         await self._enforce_principal_active(key_data)

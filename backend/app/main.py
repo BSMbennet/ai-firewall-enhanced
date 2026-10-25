@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.audit import record_event
+from app.audit import record_event, verify_chain
 from app.auth import AuthManager, get_current_user, APIKeyManager
 from app.gateway import GatewayError, effective_rate_limit, enforce_model_policy, parse_chat_payload
 from app.limits import UpstashStore, env_int, lifecycle_limit, rate_limiter
@@ -408,6 +408,14 @@ async def secure_query(request: SecurityRequest, current_user: str = Depends(aut
     if result["decision"] == "BLOCK": return SecurityResponse(request_id=request_id, allowed=False, blocked=True, message="Request blocked by security policy", risk_score=result["risk_score"], reason=result["reason"], timestamp=datetime.utcnow())
     if result["decision"] == "REVIEW": return SecurityResponse(request_id=request_id, allowed=False, blocked=False, message="Request held for security review", risk_score=result["risk_score"], reason=result["reason"], timestamp=datetime.utcnow())
     return SecurityResponse(request_id=request_id, allowed=True, blocked=False, response=result["response"], usage=result["usage"], risk_score=result["risk_score"], security_metadata={"gateway": True}, timestamp=datetime.utcnow())
+
+@app.get("/v1/audit/verify")
+async def verify_audit_chain(current_user: str = Depends(auth_manager.require_audit_reader)):
+    """Re-computes the organisation's audit hash chain. ok=false means an event was edited, removed or reordered."""
+    org = await supabase_manager.get_organization_for_user(current_user)
+    if not org: raise HTTPException(status_code=404, detail="Organization not found")
+    rows = supabase_manager.client.table("audit_events").select("*").eq("organization_id", org["id"]).order("created_at").limit(5000).execute().data or []
+    return {**verify_chain(rows), "events_examined": len(rows), "truncated": len(rows) >= 5000}
 
 @app.get("/v1/email/status")
 async def email_status(current_user: str = Depends(auth_manager.require_admin)):
