@@ -5,7 +5,7 @@ Honest list of what is **not** done or **not verified**. Items are removed only 
 high-risk enterprise or government deployment.
 
 ## Verification gaps
-- **CRITICAL, unfixed in production until the owner applies it:** browser clients can change their own role/organisation (F-29), and the live database schema does not match the code (F-30), so the deployed API cannot complete key creation, metering or admin audit writes. Do not onboard customers until both are resolved and re-verified. See the plan.
+- **CRITICAL:** the browser-write hole (F-29) was closed in production on 2026-10-26 (catalog-verified, not exploit-tested live); the live database schema still does not match the code (F-30), so the deployed API cannot complete key creation, metering or admin audit writes. Do not onboard customers until both are resolved and re-verified. See the plan.
 - Nothing has been run against a live Supabase project, Render, Vercel, Upstash or a real AI provider. All tests use an
   in-memory Supabase fake, a recording provider and (for rate limiting) a local Redis 7.0.
 - **Upstash REST `EVAL`** is assumed to behave like Redis `EVAL` for the rate-limit script. The script is verified on
