@@ -12,6 +12,8 @@
 - 446 tests; CI runs them (with real Redis) before deploy.
 
 ### Changed
+- Dependencies: runtime set trimmed to what the API imports and upgraded (pip-audit clean); frontend react-router 7; CI audits dependencies.
+- Frontend: Tailwind installed (styling was largely missing), fabricated metrics removed, dashboard uses live API data only.
 - Provider adapters rewritten: requested model verbatim, status checks, bounded retries, normalised errors (504/429/503/502).
 - Gateway fails closed on inspection or audit failure.
 

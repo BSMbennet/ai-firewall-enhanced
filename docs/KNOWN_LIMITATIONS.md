@@ -42,4 +42,4 @@ high-risk enterprise or government deployment.
 - Render free plan (cold starts, no SLA); no staging environment; no backup-restore drill; no load testing.
 - Synchronous Supabase client calls inside async handlers limit throughput (F-21).
 - Cost is not computed (F-16): fabricated prices were removed; there is no dated price table yet, so cost is recorded as 0.
-- Dependencies have known vulnerabilities (B7); upgrades are pending.
+- Backend dependencies were upgraded and audit clean on 2026-10-25 (`pip-audit`); **new versions were not run against live Supabase/OpenAI/Upstash** (fastapi 0.104->0.162, starlette 0.27->1.10, openai 1.6->3.37, supabase 2.3->2.33). Frontend: 5 build/dev-tooling advisories remain (vite/esbuild, tailwind chain); fixes require major upgrades. Legacy modules importing removed packages (`app/validators`, `self_learning_model.py`, `metrics.py`, `database.py`, `cache.py`, `rate_limit.py`, `render_redis.py`) are unused and would fail to import.

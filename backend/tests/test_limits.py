@@ -168,7 +168,7 @@ def test_lua_hit_is_atomic_under_concurrency_on_a_real_redis(redis_url):
     import redis.asyncio as aioredis
 
     async def scenario():
-        client = aioredis.from_url(redis_url)
+        client = aioredis.from_url(redis_url, max_connections=500)
         try:
             limiter = limits.RateLimiter(primary=limits.UpstashStore(lambda: UpstashStyleClient(client)))
             decisions = await asyncio.gather(*[limiter.check("s", "id", 50, 60) for _ in range(400)])
@@ -188,7 +188,7 @@ def test_lua_window_expires_and_a_key_that_lost_its_ttl_is_repaired(redis_url):
     import redis.asyncio as aioredis
 
     async def scenario():
-        client = aioredis.from_url(redis_url)
+        client = aioredis.from_url(redis_url, max_connections=500)
         try:
             store = limits.UpstashStore(lambda: UpstashStyleClient(client))
             assert (await store.hit("k1", 300))[0] == 1

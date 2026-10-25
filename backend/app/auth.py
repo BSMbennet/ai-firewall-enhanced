@@ -7,7 +7,6 @@ from typing import Any, Dict, Iterable
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import jwt
 
 from app.rbac import AI_USER_ROLES, AUDIT_READER_ROLES, BLOCKED_MEMBER_STATUSES
 from app.supabase_client import SupabaseManager
@@ -108,7 +107,7 @@ async def enforce_org_auth_policy(
 
     if settings.get("require_mfa"):
         try:
-            claims = jwt.get_unverified_claims(access_token)
+            claims = _unverified_claims(access_token)
             assurance_level = str(claims.get("aal") or "aal1")
         except Exception:
             assurance_level = "aal1"
@@ -117,6 +116,15 @@ async def enforce_org_auth_policy(
             raise forbidden(
                 "Organization MFA verification is required"
             )
+
+
+def _unverified_claims(token: str) -> Dict[str, Any]:
+    """Read JWT claims WITHOUT verifying the signature. Only used after Supabase Auth has already validated the token
+    (to read the ``aal`` claim); never use it to make a decision about an unvalidated token."""
+    import base64
+    import json
+    payload = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 
 
 async def get_current_user(
