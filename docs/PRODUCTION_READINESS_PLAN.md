@@ -123,9 +123,9 @@ installed for the repo) — work is committed locally on branch `production-read
 | 2 | Employee suspension/removal enforced | IN PROGRESS | F-04 |
 | 3 | Permission matrix & least-privilege checks | IN PROGRESS | F-05, F-11 |
 | 4 | API-key scopes / expiry / revoke / rotate | IN PROGRESS | F-03, F-06 |
-| 5 | Secure gateway & provider adapters | NOT STARTED | F-09, F-16, F-17, F-19 |
+| 5 | Secure gateway & provider adapters | IMPLEMENTED (tested against fakes only) | F-17 fixed: requested model verbatim, status checks, bounded retry on transient errors only, normalised `ProviderError` -> 504/429/503/502, no fallback text, no billable health check. F-16 partly: fabricated cost removed (`cost` is NULL/0); a dated price table is NOT STARTED. **Not verified against real OpenAI/Anthropic** (no keys) |
 | 6 | Detection: rule table, normalisation, SA ID/phone/card/key/private-key detectors, redaction, ReDoS-bounded, labeled evaluation sets | IMPLEMENTED | F-18 (partly), F-26. See `docs/DETECTION_EVALUATION.md`: 85.7% attack recall on the author-written tuning set, **35% on the first held-out evaluation before tuning**. NOT a verified defence. Open: multilingual (F-27), encodings, paraphrase, no ML signal, no real-traffic evaluation |
-| 6 | Policy engine wiring (allowlists, PII/injection modes), trusted/untrusted message separation | NOT STARTED | F-09, F-19 |
+| 6 | Policy engine wiring (allowlists, PII/injection modes), trusted/untrusted message separation | IMPLEMENTED | F-09: `app/policy.py` (default ON, most restrictive policy wins, PRIVATE_KEY always blocked); `sensitive_content_protection` controls response filtering. F-19: roles preserved, guard is a separate first system message, unsupported roles/content parts rejected (400) instead of dropped; all roles inspected. Still open: request-body size cap at the HTTP layer, `audit_logging` column not honoured |
 | 7 | Request-rate limits: gateway (per key + per org + policy override) and credential-lifecycle endpoints; documented degraded-store policy | IMPLEMENTED | F-10. 38 tests incl. Lua atomicity on real Redis 7.0. NOT verified on Upstash. Gaps: no unauthenticated/IP limiting, no token quotas or cost budgets, fixed window |
 | 7 | Usage trends/cost accuracy, SQL-side stats | NOT STARTED | F-15, F-16 |
 | 8 | Audit logging, alerts, reporting | NOT STARTED | F-20 |
@@ -167,6 +167,7 @@ _Appended as work is verified (command, date, result)._
 | 2026-10-25 #6 | labeled sets written first; baseline of old detector via `tests/eval/runner.py` | 4/56 attacks held (7.1%), PII accuracy 82.4% |
 | 2026-10-25 #6 | new `app/detection.py` + orchestrator integration; `scripts/eval_detection.py` | tuning set 48/56 (85.7%), 3/40 benign held, PII 97.6%. **Held-out set, first and only blind run: 7/20 (35%), 1/10 benign held.** After tuning on its misses (no longer independent): 13/20 (65%) |
 | 2026-10-25 #6 | timing of 19 adversarial inputs (20k chars) | worst 978 ms before fix (quadratic email pattern, F-28) -> worst 48 ms after; `pytest`: **412 passed, 1 xfailed** (strict, F-27) |
+| 2026-10-25 #7 | new `app/policy.py`, rewritten `app/llm_router.py`, `gateway.py`/`orchestrator.py`/`main.py` wiring; `REQUIRE_REDIS=1 pytest -q` | new `test_llm_router.py` (MockTransport + fake OpenAI client) and `test_policy.py`: **442 passed, 1 xfailed** (F-27). No real provider call was made |
 
 ## 4. Working-tree state (must be committed by the owner)
 

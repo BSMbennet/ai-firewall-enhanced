@@ -32,11 +32,14 @@ class RecordingProvider:
         self.content = "Hello from the controlled test provider."
 
     async def route(self, prompt: str, model: str = "gpt-4o-mini", max_tokens: int = 1000,
-                    temperature: float = 0.7, request_id: str | None = None) -> Dict[str, Any]:
-        self.calls.append({"prompt": prompt, "model": model, "request_id": request_id})
+                    temperature: float = 0.7, request_id: str | None = None,
+                    messages: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
+        messages = messages or [{"role": "user", "content": prompt}]
+        self.calls.append({"prompt": "\n".join(m["content"] for m in messages), "messages": messages,
+                           "model": model, "request_id": request_id})
         if self.fail:
-            return {"choices": [{"message": {"content": "fallback"}}], "usage": {"total_tokens": 0},
-                    "model": "fallback", "cost": 0, "error": "provider down"}
+            from app.llm_router import ProviderError
+            raise ProviderError("openai", "upstream_error", retryable=True, status=502)
         return {"choices": [{"message": {"content": self.content}}],
                 "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
                 "model": model, "cost": 0}

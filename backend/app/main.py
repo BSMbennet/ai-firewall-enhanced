@@ -14,7 +14,8 @@ from app.auth import AuthManager, get_current_user, APIKeyManager
 from app.gateway import GatewayError, effective_rate_limit, enforce_model_policy, parse_chat_payload
 from app.limits import UpstashStore, env_int, lifecycle_limit, rate_limiter
 from app.orchestrator import InspectionUnavailable, SecurityOrchestrator
-from app.llm_router import LLMRouter
+from app.llm_router import LLMRouter, ProviderError
+from app.policy import effective_protections
 from app.supabase_client import SupabaseManager
 from app.upstash_cache import UpstashCache
 from app.r2_storage import CloudflareR2
@@ -271,7 +272,7 @@ async def _load_policies(organization_id: str | None) -> list:
         return []
     return supabase_manager.client.table("security_policies").select("*").eq("organization_id", organization_id).execute().data or []
 
-async def run_firewall_pipeline(prompt: str, model: str, max_tokens: int, temperature: float, user_id: str, request_id: str, gateway_context: Dict[str, Any] | None = None):
+async def run_firewall_pipeline(prompt: str, model: str, max_tokens: int, temperature: float, user_id: str, request_id: str, gateway_context: Dict[str, Any] | None = None, messages: list | None = None, policies: list | None = None):
     """Inspect -> decide -> (audit) -> forward -> filter -> record.
 
     Returns a dict with ``decision`` of BLOCK, REVIEW or ALLOW. Only ALLOW is ever sent to a provider. If
@@ -281,9 +282,11 @@ async def run_firewall_pipeline(prompt: str, model: str, max_tokens: int, temper
     org_id = ctx.get("organization_id"); app_id = ctx.get("application_id"); employee_id = ctx.get("employee_id")
     event_base = {"user_id": user_id, "organization_id": org_id, "application_id": app_id, "employee_id": employee_id}
     elapsed = lambda: (time.time() - start_time) * 1000
+    protections = effective_protections(policies or [])
+    messages = messages or [{"role": "user", "content": prompt}]
 
     try:
-        security_result = await orchestrator.validate_request_parallel(prompt=prompt, context={}, user_id=user_id, request_id=request_id)
+        security_result = await orchestrator.validate_request_parallel(prompt=prompt, context={}, user_id=user_id, request_id=request_id, protections=protections)
     except InspectionUnavailable:
         await _safely("audit_log", supabase_manager.log_audit({**event_base, "request_id": request_id, "action": "BLOCK", "risk_score": None, "tokens_used": {}, "latency_ms": elapsed(), "model": model, "cost": 0, "reason": "inspection_unavailable", "metadata": {"gateway": True, "fail_closed": True}}))
         await api_key_manager.record_gateway_outcome(ctx, blocked=True)
@@ -315,21 +318,33 @@ async def run_firewall_pipeline(prompt: str, model: str, max_tokens: int, temper
     async def finalize(patch: Dict[str, Any]):
         await _safely("audit_update", _update_audit(audit_row["id"], patch))
 
-    sanitized_prompt = await orchestrator.sanitize_prompt(prompt, redact_pii=security_result.pii_detected)
-    guarded_prompt = await orchestrator.apply_prompt_guard(sanitized_prompt, context={})
+    outbound = orchestrator.build_messages(messages, redact_pii=protections.pii and security_result.pii_detected)
     try:
-        llm_response = await llm_router.route(prompt=guarded_prompt, model=model, max_tokens=max_tokens, temperature=temperature, request_id=request_id)
-        if llm_response.get("error"): raise RuntimeError("provider returned an error")
-        filtered_response = await orchestrator.filter_response(llm_response=llm_response, prevent_data_leakage=True, block_harmful_content=True)
+        llm_response = await llm_router.route(prompt=outbound[-1]["content"], messages=outbound, model=model, max_tokens=max_tokens, temperature=temperature, request_id=request_id)
+        filtered_response = await orchestrator.filter_response(llm_response=llm_response, prevent_data_leakage=protections.sensitive_content, block_harmful_content=protections.sensitive_content)
         content = filtered_response["choices"][0]["message"]["content"]
+    except ProviderError as exc:
+        logger.error("provider_call_failed request_id=%s model=%s provider=%s code=%s", request_id, model, exc.provider, exc.code)
+        await finalize({"latency_ms": elapsed(), "reason": f"provider_{exc.code}", "metadata": {"gateway": True, "provider_error": True, "provider_code": exc.code, "provider_status": exc.status}})
+        raise _provider_gateway_error(exc)
     except Exception:
         logger.error("provider_call_failed request_id=%s model=%s", request_id, model, exc_info=True)
         await finalize({"latency_ms": elapsed(), "reason": "provider_error", "metadata": {"gateway": True, "provider_error": True}})
         raise GatewayError(502, "provider_unavailable", "The AI provider is unavailable", "provider_error")
     usage = llm_response.get("usage", {})
-    await finalize({"latency_ms": elapsed(), "tokens_used": usage, "cost": llm_response.get("cost", 0)})
+    await finalize({"latency_ms": elapsed(), "tokens_used": usage, "cost": llm_response.get("cost") or 0})
     await api_key_manager.record_gateway_outcome(ctx, blocked=False, tokens=usage.get("total_tokens", 0))
     return {"decision": "ALLOW", "response": content, "usage": usage, "risk_score": security_result.risk_score, "reason": security_result.reason}
+
+def _provider_gateway_error(exc: ProviderError) -> GatewayError:
+    if exc.code == "timeout":
+        return GatewayError(504, "provider_timeout", "The AI provider did not respond in time", "provider_error")
+    if exc.code == "rate_limited":
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        return GatewayError(429, "provider_rate_limited", "The AI provider is rate limiting requests. Retry later.", "rate_limit_error", headers=headers)
+    if exc.code == "not_configured":
+        return GatewayError(503, "provider_not_configured", "The requested provider is not configured on this gateway", "service_unavailable")
+    return GatewayError(502, "provider_unavailable", "The AI provider is unavailable", "provider_error")
 
 async def _update_audit(audit_id: str, patch: Dict[str, Any]):
     supabase_manager.client.table("audit_logs").update(patch).eq("id", audit_id).execute()
@@ -363,7 +378,7 @@ async def chat_completions(payload: Dict[str, Any], response: Response, key_data
         chat_request = parse_chat_payload(payload)
         enforce_model_policy(chat_request.model, policies)
         await api_key_manager.enforce_usage(key_data)  # count the request only once it is valid and permitted
-        result = await run_firewall_pipeline(chat_request.prompt, chat_request.model, chat_request.max_tokens, chat_request.temperature, key_data["user_id"], request_id, key_data)
+        result = await run_firewall_pipeline(chat_request.prompt, chat_request.model, chat_request.max_tokens, chat_request.temperature, key_data["user_id"], request_id, key_data, messages=list(chat_request.messages), policies=policies)
     except GatewayError as exc:
         return JSONResponse(status_code=exc.status_code, content=exc.body(request_id), headers=exc.headers)
     if decision:
@@ -387,7 +402,7 @@ async def secure_query(request: SecurityRequest, current_user: str = Depends(aut
         await _enforce_rate_limits(context, policies, request_id, current_user)
         enforce_model_policy(model, policies)
         await api_key_manager.enforce_usage(context)
-        result = await run_firewall_pipeline(request.prompt, model, request.max_tokens or 1000, request.temperature if request.temperature is not None else 0.7, current_user, request_id, context)
+        result = await run_firewall_pipeline(request.prompt, model, request.max_tokens or 1000, request.temperature if request.temperature is not None else 0.7, current_user, request_id, context, policies=policies)
     except GatewayError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message, headers=exc.headers)
     if result["decision"] == "BLOCK": return SecurityResponse(request_id=request_id, allowed=False, blocked=True, message="Request blocked by security policy", risk_score=result["risk_score"], reason=result["reason"], timestamp=datetime.utcnow())

@@ -31,12 +31,16 @@ class GatewayError(Exception):
         return payload
 
 
+ALLOWED_ROLES = ("system", "user", "assistant")
+
+
 @dataclass(frozen=True)
 class ChatRequest:
     model: str
-    prompt: str
+    prompt: str            # all message text joined; this is what the firewall inspects
     max_tokens: int
     temperature: float
+    messages: tuple = ()   # ({"role", "content"}, ...) roles preserved, forwarded as separate messages
 
 
 def provider_for_model(model: str) -> Optional[str]:
@@ -48,11 +52,18 @@ def provider_for_model(model: str) -> Optional[str]:
 
 
 def _content_text(content: Any) -> str:
+    """Plain text of a message. Non-text content parts (images, audio, files) are rejected, not silently dropped:
+    anything that would reach the provider must have been inspected."""
     if isinstance(content, str):
         return content
-    if isinstance(content, list):  # OpenAI content parts; only text parts are inspected/forwarded
-        return "\n".join(str(part.get("text", "")) for part in content if isinstance(part, dict) and part.get("type") == "text")
-    return ""
+    if isinstance(content, list):
+        texts = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "text" or not isinstance(part.get("text"), str):
+                raise GatewayError(400, "unsupported_content", "Only text content is supported")
+            texts.append(part["text"])
+        return "\n".join(texts)
+    raise GatewayError(400, "invalid_request", "Message content must be a string")
 
 
 def _number(value: Any, name: str, *, integer: bool) -> float:
@@ -69,10 +80,19 @@ def parse_chat_payload(payload: Any) -> ChatRequest:
         raise GatewayError(400, "invalid_request", "messages must be a non-empty array")
     if len(messages) > MAX_MESSAGES:
         raise GatewayError(400, "invalid_request", f"messages may contain at most {MAX_MESSAGES} entries")
-    user_text = [_content_text(m.get("content")) for m in messages if isinstance(m, dict) and m.get("role") == "user"]
-    prompt = "\n".join(t for t in user_text if t.strip())
-    if not prompt:
+    parsed = []
+    for message in messages:
+        if not isinstance(message, dict):
+            raise GatewayError(400, "invalid_request", "Each message must be an object")
+        role = message.get("role")
+        if role not in ALLOWED_ROLES:
+            raise GatewayError(400, "unsupported_role", "Message role must be one of: system, user, assistant")
+        text = _content_text(message.get("content"))
+        if text.strip():
+            parsed.append({"role": role, "content": text})
+    if not any(m["role"] == "user" for m in parsed):
         raise GatewayError(400, "invalid_request", "At least one user message is required")
+    prompt = "\n".join(m["content"] for m in parsed)
     if len(prompt) > MAX_PROMPT_CHARS:
         raise GatewayError(400, "prompt_too_long", f"Prompt exceeds the {MAX_PROMPT_CHARS} character limit")
 
@@ -84,7 +104,7 @@ def parse_chat_payload(payload: Any) -> ChatRequest:
     tokens = int(_number(max_tokens, "max_tokens", integer=True)) if max_tokens is not None else 1000
     temp = float(_number(temperature, "temperature", integer=False)) if temperature is not None else 0.7
     return ChatRequest(model=model.strip(), prompt=prompt, max_tokens=max(1, min(tokens, MAX_TOKENS_CAP)),
-                       temperature=max(0.0, min(temp, 2.0)))
+                       temperature=max(0.0, min(temp, 2.0)), messages=tuple(parsed))
 
 
 def _as_set(value: Any) -> Optional[Set[str]]:
