@@ -4,6 +4,9 @@ Tick only with recorded evidence in `PRODUCTION_READINESS_PLAN.md`. Unticked = n
 
 - [x] Backend test suite green locally with real Redis (446 passed, 1 xfail, 2026-10-25)
 - [ ] GitHub-hosted CI observed green on the release commit
+- [ ] **BLOCKER** apply `20261026_lock_down_client_access.sql` (F-29) to staging then production, re-run `supabase/tests/client_access_attack.sql` equivalent against it
+- [ ] **BLOCKER** reconcile live schema with the code (F-30): baseline migration for all tables/RPCs the backend uses, applied on staging first
+- [ ] Enable leaked-password protection in Supabase Auth (dashboard)
 - [ ] Real Supabase schema exported to migrations; RLS policies reviewed and tested (F-14)
 - [ ] Staging environment created; release rehearsed there
 - [ ] Backup restore drill completed
