@@ -128,7 +128,7 @@ installed for the repo) — work is committed locally on branch `production-read
 | 6 | Policy engine wiring (allowlists, PII/injection modes), trusted/untrusted message separation | IMPLEMENTED | F-09: `app/policy.py` (default ON, most restrictive policy wins, PRIVATE_KEY always blocked); `sensitive_content_protection` controls response filtering. F-19: roles preserved, guard is a separate first system message, unsupported roles/content parts rejected (400) instead of dropped; all roles inspected. Still open: request-body size cap at the HTTP layer, `audit_logging` column not honoured |
 | 7 | Request-rate limits: gateway (per key + per org + policy override) and credential-lifecycle endpoints; documented degraded-store policy | IMPLEMENTED | F-10. 38 tests incl. Lua atomicity on real Redis 7.0. NOT verified on Upstash. Gaps: no unauthenticated/IP limiting, no token quotas or cost budgets, fixed window |
 | 7 | Usage trends/cost accuracy, SQL-side stats | NOT STARTED | F-15, F-16 |
-| 8 | Audit logging, alerts, reporting | NOT STARTED | F-20 |
+| 8 | Audit logging, alerts, reporting | IN PROGRESS | F-20: admin events already existed (key create/rotate/revoke, member, policy, webhook, rate limit). Added per-organisation SHA-256 hash chain in `audit_events.metadata.chain` + `verify_chain` (tamper-evident only; a service-role holder can re-hash; concurrent writes can fork the chain; head not anchored externally; no verify endpoint yet; `audit_logs` gateway rows not chained). Missing: failed-auth events, SCIM token events |
 | 9 | Webhooks: SSRF guard, signed + replay-protected, bounded retries off request path | IMPLEMENTED | F-12. 46 tests incl. pinned-transport check. NOT VERIFIED against a real TLS receiver. Gaps: retries are in-process (a restart drops in-flight retries; row stays `pending`); no secret-rotation endpoint yet |
 | 9 | Enterprise SSO (OIDC/SAML) | NOT STARTED | F-13 |
 | 10 | Database integrity & migrations | BLOCKED | F-14 needs the live schema |
@@ -168,6 +168,7 @@ _Appended as work is verified (command, date, result)._
 | 2026-10-25 #6 | new `app/detection.py` + orchestrator integration; `scripts/eval_detection.py` | tuning set 48/56 (85.7%), 3/40 benign held, PII 97.6%. **Held-out set, first and only blind run: 7/20 (35%), 1/10 benign held.** After tuning on its misses (no longer independent): 13/20 (65%) |
 | 2026-10-25 #6 | timing of 19 adversarial inputs (20k chars) | worst 978 ms before fix (quadratic email pattern, F-28) -> worst 48 ms after; `pytest`: **412 passed, 1 xfailed** (strict, F-27) |
 | 2026-10-25 #7 | new `app/policy.py`, rewritten `app/llm_router.py`, `gateway.py`/`orchestrator.py`/`main.py` wiring; `REQUIRE_REDIS=1 pytest -q` | new `test_llm_router.py` (MockTransport + fake OpenAI client) and `test_policy.py`: **442 passed, 1 xfailed** (F-27). No real provider call was made |
+| 2026-10-25 #8 | `app/audit.py` hash chain; `pytest -q` | 2 new tests (link, edit/delete/reorder detected, per-org chains): **444 passed, 1 xfailed** |
 
 ## 4. Working-tree state (must be committed by the owner)
 

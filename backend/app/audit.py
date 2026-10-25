@@ -6,6 +6,8 @@ does not undo the change); see docs/KNOWN_LIMITATIONS.md for the transactional-a
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -26,6 +28,33 @@ def sanitize_metadata(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return clean
 
 
+GENESIS = "0" * 64
+_HASHED_FIELDS = ("organization_id", "actor_user_id", "action", "resource_type", "resource_id", "outcome", "request_id", "created_at")
+
+
+def compute_event_hash(row: Dict[str, Any], prev_hash: str) -> str:
+    body = {k: row.get(k) for k in _HASHED_FIELDS}
+    body["metadata"] = {k: v for k, v in (row.get("metadata") or {}).items() if k != "chain"}
+    return hashlib.sha256((prev_hash + json.dumps(body, sort_keys=True, default=str, separators=(",", ":"))).encode()).hexdigest()
+
+
+def verify_chain(rows: list) -> Dict[str, Any]:
+    """Check events (oldest first, one organisation). Detects edited, deleted or reordered rows and forks.
+
+    Tamper-*evidence* only: someone holding the service-role key can rewrite and re-hash the whole chain, so the latest
+    hash should be anchored outside the database (see docs/KNOWN_LIMITATIONS.md). Rows written before chaining are skipped."""
+    prev, checked = None, 0
+    for index, row in enumerate(rows):
+        chain = (row.get("metadata") or {}).get("chain")
+        if not chain:
+            continue
+        expected_prev = prev if prev is not None else chain.get("prev")
+        if chain.get("prev") != expected_prev or chain.get("hash") != compute_event_hash(row, chain.get("prev", "")):
+            return {"ok": False, "checked": checked, "broken_at": index, "event_id": row.get("id")}
+        prev, checked = chain["hash"], checked + 1
+    return {"ok": True, "checked": checked, "head": prev}
+
+
 async def record_event(supabase, *, organization_id: Optional[str], actor_user_id: Optional[str], action: str,
                        resource_type: str, resource_id: Optional[str] = None, outcome: str = "success",
                        request_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> bool:
@@ -44,6 +73,11 @@ async def record_event(supabase, *, organization_id: Optional[str], actor_user_i
     try:
         if not supabase._initialized:
             await supabase.initialize()
+        prev = GENESIS
+        if organization_id:
+            last = supabase.client.table("audit_events").select("metadata").eq("organization_id", organization_id).order("created_at", desc=True).limit(1).execute().data
+            prev = ((last[0].get("metadata") or {}).get("chain") or {}).get("hash", GENESIS) if last else GENESIS
+        row["metadata"]["chain"] = {"prev": prev, "hash": compute_event_hash(row, prev)}
         supabase.client.table("audit_events").insert(row).execute()
         return True
     except Exception:
