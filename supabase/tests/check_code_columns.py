@@ -11,6 +11,8 @@ EXTRA = {"audit_logs": {"user_id", "organization_id", "application_id", "employe
 NOT_COLUMNS = {"alerts", "api_key", "policy", "count", "settings", "connections", "tokens", "domains", "reviews", "providers", "identity", "application", "organization", "verified", "instructions", "tls", "note", "type"}  # response-dict keys, not columns
 
 def psql(sql):
+    if os.environ.get("LIVE_COLUMNS_FILE"):  # "table|column" lines exported from a live catalog
+        return [l.split("|") for l in open(os.environ["LIVE_COLUMNS_FILE"]).read().splitlines() if "|" in l]
     out = subprocess.run(["psql", "-At", "-F", "|", *sys.argv[1:], "-c", sql], capture_output=True, text=True, check=True).stdout
     return [line.split("|") for line in out.splitlines() if line]
 
