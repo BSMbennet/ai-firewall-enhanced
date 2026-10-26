@@ -18,6 +18,7 @@ separate Supabase project and Render service before the pilot and rehearse every
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | recommended | Shared rate limits |
 | `WEBHOOK_ENCRYPTION_KEY` | recommended | Fernet key(s) for webhook secrets (comma-separated list supports rotation) |
 | `GATEWAY_RATE_LIMIT_PER_MINUTE`, `GATEWAY_ORG_RATE_LIMIT_PER_MINUTE` | optional | Defaults 60 / 600 |
+| `IP_RATE_LIMIT_PER_MINUTE`, `TRUSTED_PROXY_HOPS` | optional | Defaults 300 / 1. Pre-auth per-IP limit; `/health` and `/ready` exempt. Verify the hop count on the live service before relying on it (`0` ignores `X-Forwarded-For`) |
 | `LOG_LEVEL`, `CONFIG_STRICT` | optional | `CONFIG_STRICT=true` turns warnings into startup errors |
 
 Secrets live only in Render/Vercel/Supabase settings, never in the repository.

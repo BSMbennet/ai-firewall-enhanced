@@ -25,8 +25,11 @@ high-risk enterprise or government deployment.
 - Trusted/untrusted separation: the security rules are a separate first system message and roles are preserved; this
   reduces but does not eliminate injection risk (the model may still follow untrusted text). Only text content is
   supported; tool/function messages and images are rejected.
-- **No limiting of unauthenticated traffic.** Invalid-API-key floods are not throttled per client IP, because trustworthy
-  client-IP extraction depends on the proxy topology (Render/Vercel) that has not been confirmed.
+- **Per-IP throttling depends on proxy topology.** A pre-authentication per-IP limit exists (`IP_RATE_LIMIT_PER_MINUTE`,
+  default 300), but the client IP is read from `X-Forwarded-For` using `TRUSTED_PROXY_HOPS` (default 1, assumed to match
+  Render's single edge proxy). That has NOT been confirmed on the live deployment: a wrong value either merges all
+  clients into one bucket (self-inflicted 429s) or lets callers pick their own bucket. Clients behind one corporate NAT
+  share a budget. The limit is a coarse safety net, not a quota.
 - No token-based quotas or cost budgets; only request-count limits. Fixed-window counting allows up to 2x the limit
   across a window boundary.
 - Enterprise SSO (OIDC/SAML) is not functional (F-13): identity-connection secrets are stored hashed.

@@ -12,7 +12,7 @@ analysis, **not an independent review**. "Control" means implemented in code and
 | T5 | Sensitive data sent to a provider | PII/secret detection + redaction; private keys always blocked | Limited categories (no names/addresses/health data); toggle can be disabled by org |
 | T6 | Sensitive data returned by a provider | Output redaction + harmful-content patterns | Pattern based; no streaming support |
 | T7 | Bypass by failure (fail-open) | Inspection or audit failure -> request refused; provider failure -> error, no placeholder | Rate-limiter store failure falls back to per-instance limits |
-| T8 | Abuse / cost exhaustion | Atomic rate limits, monthly request quota, token cap | No token/cost budget; no unauthenticated IP limiting |
+| T8 | Abuse / cost exhaustion | Atomic rate limits, monthly request quota, token cap | No token/cost budget; per-IP limit is coarse and its proxy-hop setting is unverified on the live deployment |
 | T9 | SSRF through webhooks | Public-address enforcement, DNS pinning, no redirects, https only | A customer-controlled public host still receives event data |
 | T10 | Forged/replayed webhook deliveries | Timestamped HMAC V2 signature + replay window | Receivers must verify (documented in API.md) |
 | T11 | Audit tampering / repudiation | Hash chain + verify endpoint; append-only usage | Not tamper-proof against service-role holder; head not anchored |

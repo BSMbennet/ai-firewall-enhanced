@@ -9,7 +9,8 @@
 - Policy engine: model/provider allow-lists, PII / injection / sensitive-content toggles (`app/policy.py`).
 - Role-preserving message handling with a separate trusted guard message.
 - Hash-chained audit events, `GET /v1/audit/verify`, SCIM token audit events.
-- 446 tests; CI runs them (with real Redis) before deploy.
+- Pre-authentication per-client-IP rate limit (`IPRateLimitMiddleware`, `IP_RATE_LIMIT_PER_MINUTE`, `TRUSTED_PROXY_HOPS`).
+- 456 tests; CI runs them (with real Redis) before deploy.
 
 ### Changed
 - Dependencies: runtime set trimmed to what the API imports and upgraded (pip-audit clean); frontend react-router 7; CI audits dependencies.

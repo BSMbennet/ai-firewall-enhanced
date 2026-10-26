@@ -159,3 +159,69 @@ def lifecycle_limit(action: str, limit: int, window_seconds: int) -> Callable[..
             raise HTTPException(status_code=429, detail=f"Too many {action} requests. Try again later.", headers=decision.headers())
 
     return dependency
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Pre-authentication, per-client-IP throttle (ASGI middleware).
+#
+# Purpose: bound unauthenticated floods (credential stuffing against key auth, scanning, malformed-body storms) before
+# any authentication or database work. It is a coarse safety net; the per-key / per-organisation limits remain the
+# real quota controls.
+#
+# Client IP: behind a reverse proxy the socket peer is the proxy, so the address comes from X-Forwarded-For. The header
+# is attacker-controllable on its left side, so we only trust the entry that our own ``TRUSTED_PROXY_HOPS`` proxies
+# appended (counted from the right). Default 1 = Render's single edge proxy. Set it to 0 to ignore the header entirely
+# (e.g. when the app is exposed directly). Wrong values weaken the control, never the gateway's own checks.
+# ---------------------------------------------------------------------------------------------------------------
+import ipaddress
+
+IP_LIMIT_EXEMPT_PATHS = frozenset({"/health", "/ready"})
+
+
+def client_ip(scope: dict, trusted_hops: int) -> str:
+    peer = (scope.get("client") or ("unknown", 0))[0]
+    if trusted_hops <= 0:
+        return peer
+    raw = b""
+    for name, value in scope.get("headers", []):
+        if name == b"x-forwarded-for":
+            raw = value
+            break
+    parts = [p.strip() for p in raw.decode("latin-1").split(",") if p.strip()]
+    if len(parts) < trusted_hops:
+        return peer
+    candidate = parts[-trusted_hops]
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return peer
+
+
+class IPRateLimitMiddleware:
+    def __init__(self, app, limiter: Optional[RateLimiter] = None, limit: Optional[int] = None, window_seconds: int = 60):
+        self.app = app
+        self._limiter = limiter
+        self._limit = limit
+        self._window = window_seconds
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") == "OPTIONS" or scope.get("path") in IP_LIMIT_EXEMPT_PATHS:
+            await self.app(scope, receive, send)
+            return
+        limit = self._limit if self._limit is not None else env_int("IP_RATE_LIMIT_PER_MINUTE", 300)
+        try:
+            hops = max(0, int(os.getenv("TRUSTED_PROXY_HOPS", "1")))
+        except ValueError:
+            hops = 1
+        ip = client_ip(scope, hops)
+        decision = await (self._limiter or rate_limiter).check("ip", ip, limit, self._window)
+        if decision.allowed:
+            await self.app(scope, receive, send)
+            return
+        if decision.first_rejection:
+            logger.warning("ip_rate_limited path=%s", scope.get("path"))  # IP deliberately not logged (personal information)
+        body = b'{"error":{"message":"Too many requests from this network. Retry after the interval in the Retry-After header.","type":"rate_limit_error","code":"ip_rate_limit_exceeded"}}'
+        headers = [(k.lower().encode(), v.encode()) for k, v in decision.headers().items()]
+        headers += [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]
+        await send({"type": "http.response.start", "status": 429, "headers": headers})
+        await send({"type": "http.response.body", "body": body})

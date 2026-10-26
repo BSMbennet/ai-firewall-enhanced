@@ -12,7 +12,7 @@ load_dotenv()
 from app.audit import record_event, verify_chain
 from app.auth import AuthManager, get_current_user, APIKeyManager
 from app.gateway import GatewayError, effective_rate_limit, enforce_model_policy, parse_chat_payload
-from app.limits import UpstashStore, env_int, lifecycle_limit, rate_limiter
+from app.limits import IPRateLimitMiddleware, UpstashStore, env_int, lifecycle_limit, rate_limiter
 from app.orchestrator import InspectionUnavailable, SecurityOrchestrator
 from app.llm_router import LLMRouter, ProviderError
 from app.policy import effective_protections
@@ -104,6 +104,8 @@ frontend_origin_regex = os.getenv(
 if frontend_origin_regex:
     cors_kwargs["allow_origin_regex"] = frontend_origin_regex
 
+# Innermost of the three: runs after CORS (so browsers can read a 429) and before authentication or any database work.
+app.add_middleware(IPRateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     **cors_kwargs,

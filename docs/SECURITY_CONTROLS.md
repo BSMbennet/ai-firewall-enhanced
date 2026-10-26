@@ -28,6 +28,7 @@ Upstash or a real AI provider. This document is not a compliance claim (no POPIA
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `IP_RATE_LIMIT_PER_MINUTE` | 300 | Per client IP, before authentication (ASGI middleware, `app/limits.py`); client IP = the `X-Forwarded-For` entry `TRUSTED_PROXY_HOPS` (default 1) from the right, so left-side spoofing does not choose the bucket |
 | `GATEWAY_RATE_LIMIT_PER_MINUTE` | 60 | Per API key (and per user for `/v1/secure-ai/query`) when no organisation policy sets a lower value |
 | `GATEWAY_ORG_RATE_LIMIT_PER_MINUTE` | 600 | Per organisation across all keys |
 | `WEBHOOK_MAX_CONCURRENT_DELIVERIES` | 20 | Concurrent background webhook deliveries per instance |
