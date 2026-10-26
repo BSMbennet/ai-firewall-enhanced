@@ -31,7 +31,7 @@ class RecordingProvider:
         self.fail = False
         self.content = "Hello from the controlled test provider."
 
-    async def route(self, prompt: str, model: str = "gpt-4o-mini", max_tokens: int = 1000,
+    async def route(self, prompt: str, model: str = "meta/llama-3.1-8b-instruct", max_tokens: int = 1000,
                     temperature: float = 0.7, request_id: str | None = None,
                     messages: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
         messages = messages or [{"role": "user", "content": prompt}]
@@ -39,7 +39,7 @@ class RecordingProvider:
                            "model": model, "request_id": request_id})
         if self.fail:
             from app.llm_router import ProviderError
-            raise ProviderError("openai", "upstream_error", retryable=True, status=502)
+            raise ProviderError("nvidia", "upstream_error", retryable=True, status=502)
         return {"choices": [{"message": {"content": self.content}}],
                 "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
                 "model": model, "cost": 0}
@@ -129,7 +129,7 @@ def make_key(client, db, user_id: str, **payload) -> Dict[str, Any]:
 
 
 def chat(client, key: str, content: str = "What is the capital of France?", **extra):
-    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": content}], **extra}
+    body = {"model": "meta/llama-3.1-8b-instruct", "messages": [{"role": "user", "content": content}], **extra}
     return client.post("/v1/chat/completions", json=body, headers={"Authorization": f"Bearer {key}"})
 
 

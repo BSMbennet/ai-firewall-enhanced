@@ -13,7 +13,9 @@ separate Supabase project and Render service before the pilot and rehearse every
 |---|---|---|
 | `ENVIRONMENT=production` | yes | Enables strict startup validation |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | yes | Startup fails without them in production |
-| `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` | at least one | Provider access (warning if none) |
+| `NVIDIA_API_KEY` (NVIDIA NIM; alias `NVIDIA_NIM_API_KEY`) and/or `ANTHROPIC_API_KEY` | at least one | Provider access (warning if none). **Rename the Render variable `OPENAI_API_KEY` to `NVIDIA_API_KEY` yourself - not done by me** |
+| `MONTHLY_TOKEN_BUDGET` | optional | Per-organisation monthly token hard stop (unset = none; invalid value = refuse everything). Global, not per-org |
+| `MODEL_PRICES_JSON` | optional | Dated price table `{model: {input_per_1k, output_per_1k, as_of}}`; no prices are shipped, cost stays null without it |
 | `FRONTEND_URL` | yes | CORS origin; placeholder values warn |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | recommended | Shared rate limits |
 | `WEBHOOK_ENCRYPTION_KEY` | recommended | Fernet key(s) for webhook secrets (comma-separated list supports rotation) |

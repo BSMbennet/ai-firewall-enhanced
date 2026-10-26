@@ -125,7 +125,7 @@ export default function Landing() {
             <div className="grid md:grid-cols-3 gap-5 mt-12">
               {[
                 [Shield, 'THREAT DEFENSE', 'Rule-based detection of common prompt-injection patterns, personal data and credentials before a request is forwarded. Detection is not exhaustive.'],
-                [Network, 'UNIFIED GATEWAY', 'One API endpoint for OpenAI and Anthropic models, with organisation-level policy, rate limits and audit logging.'],
+                [Network, 'UNIFIED GATEWAY', 'One API endpoint for NVIDIA NIM and Anthropic models, with organisation-level policy, rate limits and audit logging.'],
                 [Eye, 'FULL VISIBILITY', 'Track every employee, application, request, risk score and security decision from one command center.'],
               ].map(([Icon, title, description]) => (
                 <div className="af-card af-card-pad" key={title}>

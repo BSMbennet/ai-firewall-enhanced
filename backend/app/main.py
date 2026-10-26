@@ -11,7 +11,8 @@ load_dotenv()
 
 from app.audit import record_event, verify_chain
 from app.auth import AuthManager, get_current_user, APIKeyManager
-from app.gateway import GatewayError, effective_rate_limit, enforce_model_policy, parse_chat_payload
+from app.gateway import DEFAULT_MODEL, GatewayError, effective_rate_limit, enforce_model_policy, parse_chat_payload
+from app.budget import enforce_token_budget
 from app.limits import IPRateLimitMiddleware, UpstashStore, env_int, lifecycle_limit, rate_limiter
 from app.orchestrator import InspectionUnavailable, SecurityOrchestrator
 from app.llm_router import LLMRouter, ProviderError
@@ -187,7 +188,7 @@ async def get_applications(current_user: str = Depends(get_current_user)):
 async def create_application(payload: Dict[str, Any], current_user: str = Depends(auth_manager.require_admin)):
     name = str(payload.get("name") or "New AI Application").strip()
     if not name: raise HTTPException(status_code=400, detail="Application name is required")
-    application = await supabase_manager.create_application(current_user, name, str(payload.get("environment") or "production"), str(payload.get("provider") or "openai"), str(payload.get("model") or "gpt-4o-mini"))
+    application = await supabase_manager.create_application(current_user, name, str(payload.get("environment") or "production"), str(payload.get("provider") or "nvidia"), str(payload.get("model") or DEFAULT_MODEL))
     await record_event(supabase_manager, organization_id=application.get("organization_id"), actor_user_id=current_user, action="application.created", resource_type="application", resource_id=application.get("id"))
     return {"application": application}
 
@@ -369,6 +370,13 @@ async def _enforce_rate_limits(ctx: Dict[str, Any], policies: list, request_id: 
             raise GatewayError(429, "rate_limit_exceeded", "Rate limit exceeded. Retry after the interval in the Retry-After header.", "rate_limit_error", headers=decision.headers())
     return first
 
+async def _enforce_budget(org_id, request_id: str, user_id):
+    async def exceeded(used: int, budget: int):
+        # One audit event per organisation per hour, so a client retrying in a loop cannot flood the audit table.
+        if (await rate_limiter.check("budget_audit", str(org_id), 1, 3600)).allowed:
+            await _safely("budget_audit", record_event(supabase_manager, organization_id=org_id, actor_user_id=user_id, action="token_budget.exceeded", resource_type="organization", resource_id=str(org_id), outcome="denied", request_id=request_id, metadata={"used": used, "budget": budget}))
+    await enforce_token_budget(supabase_manager.client, org_id, exceeded)
+
 @app.post("/v1/chat/completions")
 async def chat_completions(payload: Dict[str, Any], response: Response, key_data: Dict = Depends(api_key_manager.verify_api_key_context)):
     request_id = current_request_id() or str(uuid.uuid4())
@@ -379,6 +387,7 @@ async def chat_completions(payload: Dict[str, Any], response: Response, key_data
         decision = await _enforce_rate_limits(key_data, policies, request_id, str(key_data.get("id") or key_data["user_id"]))
         chat_request = parse_chat_payload(payload)
         enforce_model_policy(chat_request.model, policies)
+        await _enforce_budget(key_data.get("organization_id"), request_id, key_data.get("user_id"))
         await api_key_manager.enforce_usage(key_data)  # count the request only once it is valid and permitted
         result = await run_firewall_pipeline(chat_request.prompt, chat_request.model, chat_request.max_tokens, chat_request.temperature, key_data["user_id"], request_id, key_data, messages=list(chat_request.messages), policies=policies)
     except GatewayError as exc:
@@ -394,7 +403,7 @@ async def chat_completions(payload: Dict[str, Any], response: Response, key_data
 @app.post("/v1/secure-ai/query", response_model=SecurityResponse)
 async def secure_query(request: SecurityRequest, current_user: str = Depends(auth_manager.require_ai_user)):
     """Interactive query with a user session. Subject to the same policy, quota and audit controls as the gateway."""
-    request_id = current_request_id() or str(uuid.uuid4()); model = request.model.value if hasattr(request.model, "value") else str(request.model)
+    request_id = current_request_id() or str(uuid.uuid4()); model = (request.model or DEFAULT_MODEL).strip()
     org = await supabase_manager.get_organization_for_user(current_user)
     if not org: raise HTTPException(status_code=404, detail="Organization not found")
     member = supabase_manager.client.table("organization_members").select("id").eq("organization_id", org["id"]).eq("user_id", current_user).maybe_single().execute().data
@@ -403,6 +412,7 @@ async def secure_query(request: SecurityRequest, current_user: str = Depends(aut
         policies = await _load_policies(org["id"])
         await _enforce_rate_limits(context, policies, request_id, current_user)
         enforce_model_policy(model, policies)
+        await _enforce_budget(context.get("organization_id"), request_id, current_user)
         await api_key_manager.enforce_usage(context)
         result = await run_firewall_pipeline(request.prompt, model, request.max_tokens or 1000, request.temperature if request.temperature is not None else 0.7, current_user, request_id, context, policies=policies)
     except GatewayError as exc:

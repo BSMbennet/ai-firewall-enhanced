@@ -281,7 +281,7 @@ def test_only_one_audit_event_is_written_per_window_however_many_requests_are_re
 
 
 def test_interactive_endpoint_is_limited_per_user(client, db, world, provider, small_limits):
-    body = {"prompt": "What is the capital of France?", "model": "gpt-4"}
+    body = {"prompt": "What is the capital of France?", "model": "meta/llama-3.1-8b-instruct"}
     statuses = [client.post("/v1/secure-ai/query", json=body, headers=db.token(world["developer"])).status_code for _ in range(4)]
     assert statuses == [200, 200, 200, 429]
 

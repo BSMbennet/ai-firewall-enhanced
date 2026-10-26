@@ -49,7 +49,7 @@ def test_pii_redaction_toggle_and_private_key_always_blocked(client, db, world, 
 
 def test_roles_are_preserved_and_guard_is_first_trusted_message(client, db, world, provider):
     k = make_key(client, db, world["owner"], name="k")["key"]
-    body = {"model": "gpt-4o-mini", "messages": [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "Hi"},
+    body = {"model": "meta/llama-3.1-8b-instruct", "messages": [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "Hi"},
                                                   {"role": "assistant", "content": "Hello"}, {"role": "user", "content": "Bye"}]}
     assert client.post("/v1/chat/completions", json=body, headers={"Authorization": f"Bearer {k}"}).status_code == 200
     sent = provider.calls[-1]["messages"]
@@ -60,7 +60,7 @@ def test_roles_are_preserved_and_guard_is_first_trusted_message(client, db, worl
 
 def test_injection_in_assistant_or_system_message_is_inspected(client, db, world, provider):
     k = make_key(client, db, world["owner"], name="k")["key"]
-    body = {"model": "gpt-4o-mini", "messages": [{"role": "assistant", "content": INJECTION}, {"role": "user", "content": "ok"}]}
+    body = {"model": "meta/llama-3.1-8b-instruct", "messages": [{"role": "assistant", "content": INJECTION}, {"role": "user", "content": "ok"}]}
     assert client.post("/v1/chat/completions", json=body, headers={"Authorization": f"Bearer {k}"}).status_code == 403
     assert provider.calls == []
 
@@ -74,7 +74,7 @@ def test_injection_in_assistant_or_system_message_is_inspected(client, db, world
 ])
 def test_unsupported_messages_are_rejected_not_dropped(client, db, world, provider, messages, code):
     k = make_key(client, db, world["owner"], name="k")["key"]
-    r = client.post("/v1/chat/completions", json={"model": "gpt-4o-mini", "messages": messages}, headers={"Authorization": f"Bearer {k}"})
+    r = client.post("/v1/chat/completions", json={"model": "meta/llama-3.1-8b-instruct", "messages": messages}, headers={"Authorization": f"Bearer {k}"})
     assert r.status_code == 400 and r.json()["error"]["code"] == code and provider.calls == []
 
 
@@ -84,11 +84,11 @@ def test_provider_errors_map_to_gateway_statuses(client, db, world, provider, mo
     import app.main as main
 
     async def boom(**_kw):
-        raise ProviderError("openai", code, retryable=False, status=500, retry_after=9)
+        raise ProviderError("nvidia", code, retryable=False, status=500, retry_after=9)
 
     monkeypatch.setattr(main.llm_router, "route", boom)
     k = make_key(client, db, world["owner"], name="k")["key"]
-    r = client.post("/v1/chat/completions", json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}, headers={"Authorization": f"Bearer {k}"})
+    r = client.post("/v1/chat/completions", json={"model": "meta/llama-3.1-8b-instruct", "messages": [{"role": "user", "content": "hi"}]}, headers={"Authorization": f"Bearer {k}"})
     assert r.status_code == status
     assert r.json()["error"]["code"].startswith("provider_")
     if code == "rate_limited":

@@ -55,7 +55,7 @@ const response = await fetch(
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: 'meta/llama-3.1-8b-instruct',
       messages: [
         { role: 'user', content: 'Hello!' }
       ]

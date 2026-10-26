@@ -3,16 +3,10 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from enum import Enum
 
-class ModelType(str, Enum):
-    GPT4 = "gpt-4"
-    GPT35 = "gpt-3.5-turbo"
-    CLAUDE = "claude-3-opus"
-    LLAMA = "llama-2"
-
 class SecurityRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=4000)
     context: Optional[Dict[str, Any]] = None
-    model: Optional[ModelType] = ModelType.GPT4
+    model: Optional[str] = Field("meta/llama-3.1-8b-instruct", min_length=1, max_length=100)  # routed and policy-checked by the gateway
     max_tokens: Optional[int] = Field(1000, ge=1, le=4000)
     temperature: Optional[float] = Field(0.7, ge=0, le=2.0)
     user_metadata: Optional[Dict[str, Any]] = None

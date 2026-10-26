@@ -130,7 +130,7 @@ def test_configure_logging_is_idempotent():
 # --- configuration validation -------------------------------------------------------------------
 
 GOOD = {"ENVIRONMENT": "production", "SUPABASE_URL": "https://x.supabase.co", "SUPABASE_SERVICE_ROLE_KEY": "k",
-        "FRONTEND_URL": "https://app.example.com", "WEBHOOK_ENCRYPTION_KEY": "w", "OPENAI_API_KEY": "o",
+        "FRONTEND_URL": "https://app.example.com", "WEBHOOK_ENCRYPTION_KEY": "w", "NVIDIA_API_KEY": "o",
         "UPSTASH_REDIS_REST_URL": "https://u", "UPSTASH_REDIS_REST_TOKEN": "t"}
 
 
@@ -152,7 +152,7 @@ def test_missing_database_credentials_are_errors_in_production(missing):
 
 
 def test_optional_gaps_are_warnings_not_errors_so_a_deploy_is_not_taken_down():
-    env = {k: v for k, v in GOOD.items() if k not in {"WEBHOOK_ENCRYPTION_KEY", "OPENAI_API_KEY", "UPSTASH_REDIS_REST_URL"}}
+    env = {k: v for k, v in GOOD.items() if k not in {"WEBHOOK_ENCRYPTION_KEY", "NVIDIA_API_KEY", "UPSTASH_REDIS_REST_URL"}}
     report = obs.validate_environment(env)
     assert report.ok and len(report.warnings) == 3
 
@@ -164,7 +164,7 @@ def test_match_everything_cors_regex_is_an_error_but_a_narrow_one_is_a_warning()
 
 
 def test_strict_mode_promotes_warnings_to_errors():
-    env = {k: v for k, v in GOOD.items() if k != "OPENAI_API_KEY"}
+    env = {k: v for k, v in GOOD.items() if k != "NVIDIA_API_KEY"}
     assert obs.validate_environment(env).ok
     assert not obs.validate_environment({**env, "CONFIG_STRICT": "true"}).ok
 

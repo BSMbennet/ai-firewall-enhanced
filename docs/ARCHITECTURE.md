@@ -9,7 +9,7 @@ Describes what exists in this repository. Items marked *unverified* have never r
 | Database / auth | Supabase Postgres + GoTrue | The API uses the **service-role key** and enforces tenancy and roles in application code; RLS is not relied on and is untested (F-14) |
 | Shared limiter state | Upstash Redis (REST) | Lua script for atomic fixed-window counters; per-process fallback if the store is unreachable (never unmetered). Real-Upstash behaviour *unverified* |
 | Frontend | React 18 + Vite 5 on Vercel | Display only; every authorisation decision is server-side |
-| Providers | OpenAI chat completions, Anthropic messages | Fixed endpoints; models selected by prefix (`gpt-`, `claude-`) |
+| Providers | NVIDIA NIM chat completions (`integrate.api.nvidia.com`), Anthropic messages | Fixed endpoints; NIM models are `<publisher>/<model>` ids (publisher allow-list in `gateway.py`), Anthropic by `claude-` prefix |
 
 ## Gateway request flow (`POST /v1/chat/completions`)
 1. Request ID assigned (middleware) and bound to all logs.

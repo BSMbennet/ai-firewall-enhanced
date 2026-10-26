@@ -150,18 +150,18 @@ def test_unsupported_model_is_rejected_before_provider(client, db, world, provid
 
 
 def test_org_policy_model_allowlist_is_enforced(client, db, world, provider):
-    db.rows("security_policies", id="pol-a")[0]["approved_models"] = ["gpt-4o-mini"]
+    db.rows("security_policies", id="pol-a")[0]["approved_models"] = ["meta/llama-3.1-8b-instruct"]
     key = make_key(client, db, world["owner"])
-    assert chat(client, key["key"], model="gpt-4o-mini").status_code == 200
-    denied = chat(client, key["key"], model="gpt-4o")
+    assert chat(client, key["key"], model="meta/llama-3.1-8b-instruct").status_code == 200
+    denied = chat(client, key["key"], model="meta/llama-3.1-70b-instruct")
     assert denied.status_code == 400 and denied.json()["error"]["code"] == "model_not_allowed"
     assert len(provider.calls) == 1
 
 
 def test_org_policy_does_not_leak_across_tenants(client, db, world, provider):
-    db.rows("security_policies", id="pol-b")[0]["approved_models"] = ["gpt-3.5-turbo"]
+    db.rows("security_policies", id="pol-b")[0]["approved_models"] = ["meta/llama-3.1-70b-instruct"]
     key = make_key(client, db, world["owner"])
-    assert chat(client, key["key"], model="gpt-4o-mini").status_code == 200
+    assert chat(client, key["key"], model="meta/llama-3.1-8b-instruct").status_code == 200
 
 
 @pytest.mark.parametrize("extra", [{"max_tokens": "abc"}, {"temperature": "hot"}, {"max_tokens": []}])
@@ -186,15 +186,15 @@ def test_secure_ai_batch_endpoint_is_removed(client, db, world):
 
 
 def test_secure_ai_query_is_metered_and_blocks_injection(client, db, world, provider):
-    ok = client.post("/v1/secure-ai/query", json={"prompt": "Say hello", "model": "gpt-4"}, headers=db.token(world["member"]))
+    ok = client.post("/v1/secure-ai/query", json={"prompt": "Say hello", "model": "meta/llama-3.1-8b-instruct"}, headers=db.token(world["member"]))
     assert ok.status_code == 200, ok.text
     assert db.rows("usage_counters", organization_id=world["org_a"])[0]["request_count"] == 1
-    bad = client.post("/v1/secure-ai/query", json={"prompt": INJECTION, "model": "gpt-4"}, headers=db.token(world["member"]))
+    bad = client.post("/v1/secure-ai/query", json={"prompt": INJECTION, "model": "meta/llama-3.1-8b-instruct"}, headers=db.token(world["member"]))
     assert bad.status_code == 200 and bad.json()["blocked"] is True
     assert len(provider.calls) == 1
 
 
 def test_secure_ai_query_denied_for_read_only_viewer(client, db, world, provider):
-    response = client.post("/v1/secure-ai/query", json={"prompt": "Say hello", "model": "gpt-4"}, headers=db.token(world["viewer"]))
+    response = client.post("/v1/secure-ai/query", json={"prompt": "Say hello", "model": "meta/llama-3.1-8b-instruct"}, headers=db.token(world["viewer"]))
     assert response.status_code == 403
     assert provider.calls == []

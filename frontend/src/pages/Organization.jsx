@@ -22,7 +22,7 @@ export default function Organization() {
   const [policies, setPolicies] = useState([])
   const [loading, setLoading] = useState(true)
   const [employeeForm, setEmployeeForm] = useState({ email: '', full_name: '', role: 'member' })
-  const [appForm, setAppForm] = useState({ name: '', environment: 'production', provider: 'openai', model: 'gpt-4o-mini' })
+  const [appForm, setAppForm] = useState({ name: '', environment: 'production', provider: 'nvidia', model: 'meta/llama-3.1-8b-instruct' })
   const [keyForm, setKeyForm] = useState({ name: '', expires_days: 365, application_id: '', employee_id: '' })
   const [newKey, setNewKey] = useState(null)
 
@@ -73,7 +73,7 @@ export default function Organization() {
     try {
       await api.post('/organization/applications', appForm)
       toast.success('Application created')
-      setAppForm({ name: '', environment: 'production', provider: 'openai', model: 'gpt-4o-mini' })
+      setAppForm({ name: '', environment: 'production', provider: 'nvidia', model: 'meta/llama-3.1-8b-instruct' })
       load()
     } catch (error) { toast.error(error.response?.data?.detail || 'Could not create application') }
   }

@@ -11,7 +11,11 @@ MAX_TOKENS_CAP = 4000
 
 # Provider adapters that actually exist in app/llm_router.py. A model is only routable if its
 # name maps to one of these; arbitrary names are rejected rather than silently re-routed.
-MODEL_PROVIDERS = (("gpt-", "openai"), ("claude-", "anthropic"))
+# NVIDIA NIM model ids are "<publisher>/<model>" (e.g. meta/llama-3.1-8b-instruct); the publisher prefixes below are the
+# ones the NIM catalogue uses. Anything else is rejected, not guessed.
+NVIDIA_PUBLISHERS = ("meta/", "nvidia/", "mistralai/", "google/", "microsoft/", "deepseek-ai/", "qwen/", "ibm/", "nv-mistralai/")
+MODEL_PROVIDERS = tuple((prefix, "nvidia") for prefix in NVIDIA_PUBLISHERS) + (("claude-", "anthropic"),)
+DEFAULT_MODEL = "meta/llama-3.1-8b-instruct"
 
 
 class GatewayError(Exception):
@@ -96,7 +100,7 @@ def parse_chat_payload(payload: Any) -> ChatRequest:
     if len(prompt) > MAX_PROMPT_CHARS:
         raise GatewayError(400, "prompt_too_long", f"Prompt exceeds the {MAX_PROMPT_CHARS} character limit")
 
-    model = payload.get("model") or "gpt-4o-mini"
+    model = payload.get("model") or DEFAULT_MODEL
     if not isinstance(model, str) or len(model) > 100:
         raise GatewayError(400, "invalid_parameter", "model must be a string")
     max_tokens = payload.get("max_tokens")

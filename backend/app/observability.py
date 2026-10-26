@@ -170,7 +170,7 @@ def validate_environment(env: Optional[Mapping[str, str]] = None) -> ConfigRepor
         report.warnings.append("FRONTEND_ORIGIN_REGEX widens CORS beyond FRONTEND_URL; keep it as narrow as possible")
     if not env.get("WEBHOOK_ENCRYPTION_KEY"):
         report.warnings.append("WEBHOOK_ENCRYPTION_KEY is unset; webhook secrets use a key derived from the service-role key")
-    if not (env.get("OPENAI_API_KEY") or env.get("ANTHROPIC_API_KEY")):
+    if not (env.get("NVIDIA_API_KEY") or env.get("NVIDIA_NIM_API_KEY") or env.get("ANTHROPIC_API_KEY")):
         report.warnings.append("No AI provider key is configured; the gateway cannot serve requests")
     if not (env.get("UPSTASH_REDIS_REST_URL") and env.get("UPSTASH_REDIS_REST_TOKEN")):
         report.warnings.append("Upstash is not configured")

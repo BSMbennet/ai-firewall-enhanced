@@ -1,4 +1,4 @@
-"""Provider adapters for the AI gateway (OpenAI chat completions, Anthropic messages).
+"""Provider adapters for the AI gateway (NVIDIA NIM chat completions, Anthropic messages).
 
 Guarantees (each covered by tests/test_llm_router.py):
 * The model that is called is exactly the model that was requested (and approved by policy) - no substitution.
@@ -7,7 +7,7 @@ Guarantees (each covered by tests/test_llm_router.py):
   replaced by placeholder text and no cross-provider fallback is attempted.
 * Retries are bounded (2 attempts) and only for transient failures: timeouts, connection errors, 429 and 5xx.
 * Error messages and logs never contain prompt text, response bodies or credentials.
-* Cost is not invented: ``cost`` is None unless a dated price table is configured (not implemented yet - F-16).
+* Cost is not invented: ``cost`` is None unless an operator-supplied, dated price table covers the model (app/pricing.py).
 """
 from __future__ import annotations
 
@@ -17,12 +17,12 @@ import os
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
-import openai
-
 from app.gateway import provider_for_model
+from app.pricing import estimate_cost
 
 logger = logging.getLogger("aifirewall.llm")
 
+NVIDIA_CHAT_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 REQUEST_TIMEOUT_SECONDS = 30.0
@@ -54,7 +54,6 @@ class LLMRouter:
     def __init__(self):
         # Clients are created on first use so the application can be imported (tests, tooling, health checks)
         # without provider credentials configured.
-        self._openai_client = None
         self._http_client_factory: Callable[[], httpx.AsyncClient] = lambda: httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
         self._sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
@@ -63,18 +62,12 @@ class LLMRouter:
         return os.getenv("ANTHROPIC_API_KEY")
 
     @property
-    def openai_client(self):
-        if self._openai_client is None:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ProviderError("openai", "not_configured", retryable=False)
-            # max_retries=0: retries are decided here, not hidden inside the SDK.
-            self._openai_client = openai.AsyncOpenAI(api_key=api_key, timeout=REQUEST_TIMEOUT_SECONDS, max_retries=0)
-        return self._openai_client
+    def nvidia_key(self) -> Optional[str]:
+        return os.getenv("NVIDIA_API_KEY") or os.getenv("NVIDIA_NIM_API_KEY")
 
     def provider_status(self) -> Dict[str, bool]:
         """Report which providers are *configured*. Makes no network or billable call."""
-        return {"openai": bool(os.getenv("OPENAI_API_KEY")), "anthropic": bool(self.anthropic_key)}
+        return {"nvidia": bool(self.nvidia_key), "anthropic": bool(self.anthropic_key)}
 
     # ------------------------------------------------------------------------------------------------
     async def route(self, prompt: Optional[str] = None, model: str = "gpt-4o-mini", max_tokens: int = 1000,
@@ -88,7 +81,7 @@ class LLMRouter:
         provider = provider_for_model(model)
         if provider is None:
             raise ProviderError("gateway", "unsupported_model", retryable=False)
-        call = self._call_openai if provider == "openai" else self._call_anthropic
+        call = self._call_nvidia if provider == "nvidia" else self._call_anthropic
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
@@ -102,40 +95,43 @@ class LLMRouter:
         raise ProviderError(provider, "unexpected", retryable=False)  # unreachable; keeps the return type honest
 
     # ------------------------------------------------------------------------------------------------
-    async def _call_openai(self, messages, model, max_tokens, temperature) -> Dict[str, Any]:
-        client = self.openai_client
+    async def _call_nvidia(self, messages, model, max_tokens, temperature) -> Dict[str, Any]:
+        """NVIDIA NIM hosted API (OpenAI-compatible chat completions) at a fixed endpoint."""
+        key = self.nvidia_key
+        if not key:
+            raise ProviderError("nvidia", "not_configured", retryable=False)
+        body = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature, "stream": False}
         try:
-            response = await client.chat.completions.create(model=model, messages=messages, max_tokens=max_tokens, temperature=temperature)
-        except openai.APITimeoutError:
-            raise ProviderError("openai", "timeout", retryable=True, status=504)
-        except openai.APIConnectionError:
-            raise ProviderError("openai", "connection", retryable=True)
-        except openai.RateLimitError as exc:
-            raise ProviderError("openai", "rate_limited", retryable=True, status=429, retry_after=_retry_after(getattr(exc.response, "headers", None)))
-        except openai.APIStatusError as exc:
-            status = exc.status_code
-            if status >= 500:
-                raise ProviderError("openai", "upstream_error", retryable=True, status=status)
-            code = "auth" if status in (401, 403) else "bad_request"
-            raise ProviderError("openai", code, retryable=False, status=status)
-        except ProviderError:
-            raise
-        except Exception:
-            logger.error("provider_unexpected_error provider=openai", exc_info=True)
-            raise ProviderError("openai", "unexpected", retryable=False)
+            async with self._http_client_factory() as client:
+                response = await client.post(NVIDIA_CHAT_URL, json=body, headers={
+                    "Authorization": f"Bearer {key}", "Accept": "application/json", "Content-Type": "application/json"})
+        except httpx.TimeoutException:
+            raise ProviderError("nvidia", "timeout", retryable=True, status=504)
+        except httpx.TransportError:
+            raise ProviderError("nvidia", "connection", retryable=True)
+        status = response.status_code
+        if status == 429:
+            raise ProviderError("nvidia", "rate_limited", retryable=True, status=429, retry_after=_retry_after(response.headers))
+        if status >= 500:
+            raise ProviderError("nvidia", "upstream_error", retryable=True, status=status)
+        if status >= 400:
+            raise ProviderError("nvidia", "auth" if status in (401, 403) else "bad_request", retryable=False, status=status)
         try:
-            content = response.choices[0].message.content or ""
-            usage = response.usage
+            data = response.json()
+            content = data["choices"][0]["message"].get("content") or ""
+            if not isinstance(content, str):
+                raise TypeError("content is not text")
+            usage = data.get("usage") or {}
+            prompt_tokens, completion_tokens = int(usage.get("prompt_tokens", 0) or 0), int(usage.get("completion_tokens", 0) or 0)
+            total = int(usage.get("total_tokens", 0) or 0) or prompt_tokens + completion_tokens
             return {
                 "choices": [{"message": {"content": content}}],
-                "usage": {"prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                          "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-                          "total_tokens": int(getattr(usage, "total_tokens", 0) or 0)},
-                "model": getattr(response, "model", model) or model,
-                "cost": None,
+                "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total},
+                "model": data.get("model") or model,
+                "cost": estimate_cost(model, prompt_tokens, completion_tokens),
             }
-        except (AttributeError, IndexError, TypeError, ValueError):
-            raise ProviderError("openai", "bad_response", retryable=False)
+        except (ValueError, KeyError, IndexError, AttributeError, TypeError):
+            raise ProviderError("nvidia", "bad_response", retryable=False, status=status)
 
     async def _call_anthropic(self, messages, model, max_tokens, temperature) -> Dict[str, Any]:
         key = self.anthropic_key
@@ -177,7 +173,7 @@ class LLMRouter:
                 "choices": [{"message": {"content": text}}],
                 "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": prompt_tokens + completion_tokens},
                 "model": data.get("model") or model,
-                "cost": None,
+                "cost": estimate_cost(model, prompt_tokens, completion_tokens),
             }
         except (ValueError, AttributeError, TypeError):
             raise ProviderError("anthropic", "bad_response", retryable=False, status=status)
