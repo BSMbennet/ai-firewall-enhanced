@@ -1,0 +1,46 @@
+-- Reconstruction of the LIVE public schema as read from the Supabase catalog on 2026-10-26 (before any baseline migration),
+-- including the grants/policies Supabase defaults give. Used to test migrations locally. Not a dump.
+do $$ begin
+  if not exists (select 1 from pg_roles where rolname='anon') then create role anon nologin; end if;
+  if not exists (select 1 from pg_roles where rolname='authenticated') then create role authenticated nologin; end if;
+  if not exists (select 1 from pg_roles where rolname='service_role') then create role service_role nologin bypassrls; end if;
+end $$;
+create extension if not exists pgcrypto;
+create schema auth;
+create table auth.users(id uuid primary key);
+create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true),'')::uuid $$;
+create function auth.role() returns text language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claim.role', true),''),'service_role') $$;
+create table users(id varchar primary key, email varchar unique not null, password_hash varchar not null, company varchar, is_admin bool default false, created_at timestamptz default now(), updated_at timestamptz default now());
+create table organizations(id uuid primary key default gen_random_uuid(), name text not null, slug text not null unique, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table applications(id uuid primary key default gen_random_uuid(), organization_id uuid not null references organizations, name text not null, environment text not null default 'production' check (environment in ('development','staging','production')), provider text not null, model text not null, status text not null default 'active' check (status in ('active','disabled')), created_by uuid references auth.users, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table api_keys(id serial primary key, key varchar not null unique, user_id uuid, name varchar, permissions jsonb default '["query"]', is_active bool default true, expires_at timestamptz, last_used_at timestamptz, created_at timestamptz default now(), revoked_at timestamptz, key_hash text, organization_id uuid references organizations, application_id uuid references applications, employee_id uuid references auth.users, scopes jsonb not null default '["gateway:invoke"]', rotated_from int references api_keys);
+create table audit_logs(id uuid primary key default gen_random_uuid(), user_id uuid, request_id varchar not null, action varchar not null, risk_score float8, reason text, tokens_used jsonb, latency_ms float8, model varchar, cost float8 default 0, metadata jsonb, "timestamp" timestamptz default now(), search_vector tsvector, organization_id uuid references organizations);
+create table security_events(id uuid primary key default gen_random_uuid(), user_id uuid, request_id varchar, event_type varchar not null, severity varchar not null, risk_score float8, details jsonb, source_ip inet, user_agent text, "timestamp" timestamptz default now(), organization_id uuid references organizations);
+create table rate_limits(id serial primary key, user_id uuid, endpoint varchar, requests int default 0, window_start timestamptz);
+create table webhooks(id serial primary key, user_id uuid, url varchar not null, events text[] not null, is_active bool default true, created_at timestamptz default now(), updated_at timestamptz default now());
+create table subscriptions(id serial primary key, user_id uuid, tier varchar default 'free', requests_limit int default 1000, requests_used int default 0, period_start timestamptz, period_end timestamptz, stripe_customer_id varchar, stripe_subscription_id varchar, created_at timestamptz default now(), updated_at timestamptz default now());
+create table webhook_deliveries("Id" uuid primary key default gen_random_uuid(), "Webhook_id" int references webhooks, "Event_type" varchar, "Payload" jsonb, "Response_status" int, "Response_body" text, "Duration_ms" float8, "Success" bool default false, "Created_at" timestamptz default now());
+create table alerts("Id" uuid primary key default gen_random_uuid(), "User_id" uuid, "Alert_type" varchar not null, "Severity" varchar not null, "Title" varchar, "Message" text, "Metadata" jsonb, "Is_resolved" bool default false, "Resolved_at" timestamptz, "Created_at" timestamptz default now());
+create table notification_settings("Id" serial primary key, "User_id" uuid unique);
+create table quota_usage("Id" serial primary key, "User_id" uuid, "Date" date not null);
+create table profiles(id uuid primary key references auth.users, email text not null, company text, role text not null default 'user' check (role in ('user','admin','owner','security','developer','member','viewer')), created_at timestamptz not null default now(), updated_at timestamptz not null default now(), organization_id uuid references organizations, full_name text);
+create table organization_members(id uuid primary key default gen_random_uuid(), organization_id uuid not null references organizations, user_id uuid not null references auth.users, email text not null, full_name text, role text not null default 'member' check (role in ('owner','admin','security','developer','member','viewer')), status text not null default 'active' check (status in ('active','invited','suspended','removed')), created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table security_policies(id uuid primary key default gen_random_uuid(), organization_id uuid not null references organizations, name text not null, pii_protection bool not null default true, prompt_injection_protection bool not null default true, sensitive_content_protection bool not null default true, rate_limit_per_minute int not null default 60, approved_models jsonb not null default '[]', allowed_providers jsonb not null default '[]', audit_logging bool not null default true, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table organization_settings(organization_id uuid primary key references organizations, require_mfa bool not null default false, require_sso bool not null default false, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create function public.is_org_member(p_org_id uuid) returns bool language sql security definer as $$ select exists(select 1 from organization_members where organization_id=p_org_id and user_id=auth.uid()) $$;
+do $$ declare t text; begin for t in select tablename from pg_tables where schemaname='public' loop execute format('alter table %I enable row level security', t); end loop; end $$;
+create policy profiles_select_own on profiles for select using (auth.uid()=id);
+create policy profiles_update_own on profiles for update using (auth.uid()=id) with check (auth.uid()=id);
+create policy api_keys_own on api_keys for all using (auth.uid()=user_id) with check (auth.uid()=user_id);
+create policy webhooks_own on webhooks for all using (auth.uid()=user_id) with check (auth.uid()=user_id);
+create policy notification_settings_own on notification_settings for all using (auth.uid()="User_id") with check (auth.uid()="User_id");
+create policy organization_settings_member_read on organization_settings for select to authenticated using (is_org_member(organization_id));
+create policy organizations_member_read on organizations for select to authenticated using (is_org_member(id));
+grant usage on schema public, auth to anon, authenticated, service_role;
+grant all on all tables in schema public to anon, authenticated, service_role;
+grant all on all sequences in schema public to anon, authenticated, service_role;
+grant execute on all functions in schema public to public, anon, authenticated, service_role;
+grant execute on function auth.uid(), auth.role() to anon, authenticated, service_role;
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;

@@ -40,6 +40,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+USAGE: Dict[str, Dict[str, set]] = {}  # table -> {"write": cols, "read": cols, "ops": ops}; dumped by conftest when RECORD_DB_USAGE is set
+
+
+def _record_usage(q) -> None:
+    entry = USAGE.setdefault(q.table, {"write": set(), "read": set(), "ops": set(), "on_conflict": set()})
+    entry["ops"].add(q.op)
+    if q.op in ("insert", "upsert", "update"):
+        for item in q.payload if isinstance(q.payload, list) else [q.payload]:
+            entry["write"].update(item.keys())
+    if q.op == "upsert" and q.on_conflict:
+        entry["on_conflict"].add(q.on_conflict)
+    entry["read"].update(col for _, col, _ in q.filters)
+    if q._order:
+        entry["read"].add(q._order[0])
+    if q._cols not in ("*", ""):
+        entry["read"].update(c.strip() for c in q._cols.split(",") if c.strip() and "(" not in c)
+
+
 class Resp:
     def __init__(self, data: Any, count: Optional[int] = None):
         self.data = data
@@ -134,6 +152,7 @@ class Query:
         with self.db.lock:
             rows = self.db.tables.setdefault(self.table, [])
             self.db.calls.append((self.op, self.table))
+            _record_usage(self)
             if self.op == "select":
                 matched = [r for r in rows if self._match(r)]
                 total = len(matched)
@@ -251,6 +270,8 @@ class RpcCall:
         self.db, self.name, self.params = db, name, params
 
     def execute(self) -> Resp:
+        USAGE.setdefault("__rpc__", {"write": set(), "read": set(), "ops": set(), "on_conflict": set()})["ops"].add(
+            f"{self.name}({','.join(sorted(self.params))})")
         with self.db.lock:
             rows = self.db.tables.setdefault("usage_counters", [])
             org, period = self.params.get("p_organization_id"), self.params.get("p_period_start")

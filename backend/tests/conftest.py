@@ -131,3 +131,13 @@ def make_key(client, db, user_id: str, **payload) -> Dict[str, Any]:
 def chat(client, key: str, content: str = "What is the capital of France?", **extra):
     body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": content}], **extra}
     return client.post("/v1/chat/completions", json=body, headers={"Authorization": f"Bearer {key}"})
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """With RECORD_DB_USAGE=<path>, write every table/column the code touched during the run (see scripts/check_schema.py)."""
+    import json, os
+    path = os.getenv("RECORD_DB_USAGE")
+    if path:
+        from fakes import USAGE
+        with open(path, "w") as fh:
+            json.dump({t: {k: sorted(v) for k, v in e.items()} for t, e in USAGE.items()}, fh, indent=1, sort_keys=True)
