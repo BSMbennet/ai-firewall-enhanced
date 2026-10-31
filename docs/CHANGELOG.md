@@ -11,7 +11,7 @@
 - Hash-chained audit events, `GET /v1/audit/verify`, SCIM token audit events.
 - Pre-authentication per-client-IP rate limit (`IPRateLimitMiddleware`, `IP_RATE_LIMIT_PER_MINUTE`, `TRUSTED_PROXY_HOPS`).
 - NVIDIA NIM provider adapter (fixed endpoint, normalised errors, bounded retries); `MONTHLY_TOKEN_BUDGET` hard stop; optional dated price table (`MODEL_PRICES_JSON`).
-- 474 tests; CI runs them (with real Redis) before deploy.
+- 478 tests; CI runs them (with real Redis) before deploy.
 
 ### Changed
 - Dependencies: runtime set trimmed to what the API imports and upgraded (pip-audit clean); frontend react-router 7; CI audits dependencies.

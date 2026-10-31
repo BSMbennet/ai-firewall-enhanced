@@ -153,3 +153,37 @@ def test_key_lifecycle_is_audited_without_secrets(client, db, world):
     assert [e["action"] for e in events] == ["api_key.created", "api_key.rotated", "api_key.revoked"]
     assert all(e["actor_user_id"] == world["owner"] for e in events)
     assert key["key"] not in json.dumps(events) and new["key"] not in json.dumps(events)
+
+
+def test_listing_keys_never_returns_secrets_or_hashes(client, db, world):
+    created = make_key(client, db, world["owner"], name="listed")
+    body = client.get("/v1/api-keys", headers=db.token(world["owner"]))
+    assert body.status_code == 200
+    text = body.text
+    assert created["key"] not in text
+    row = db.rows("api_keys", id=created["id"])[0]
+    assert row["key_hash"] not in text
+    assert all("key_hash" not in k and "key" not in k for k in (body.json() if isinstance(body.json(), list) else body.json().get("keys", [])))
+
+
+def test_keys_are_not_listed_across_organisations(client, db, world):
+    mine = make_key(client, db, world["owner"], name="a-key")
+    theirs = make_key(client, db, world["owner_b"], name="b-key")
+    text = client.get("/v1/api-keys", headers=db.token(world["owner"])).text
+    assert mine["id"] in text or "a-key" in text
+    assert "b-key" not in text and str(theirs["id"]) not in text.replace(str(mine["id"]), "")
+
+
+def test_legacy_key_without_scopes_may_chat_but_nothing_else(client, db, world, provider):
+    from app.auth import APIKeyManager
+    key = make_key(client, db, world["owner"])
+    db.rows("api_keys", id=key["id"])[0]["scopes"] = None
+    assert chat(client, key["key"]).status_code == 200
+    assert APIKeyManager.has_scope({"scopes": None}, "chat") and not APIKeyManager.has_scope({"scopes": None}, "audit:read")
+
+
+def test_the_pre_baseline_demo_key_scope_is_refused(client, db, world, provider):
+    """Production still has a 'Demo API Key' with scopes ["gateway:invoke"]; it must not be accepted as chat-capable."""
+    key = make_key(client, db, world["owner"])
+    db.rows("api_keys", id=key["id"])[0]["scopes"] = ["gateway:invoke"]
+    assert chat(client, key["key"]).status_code == 403 and provider.calls == []
